@@ -5,7 +5,7 @@ import { sentences, tokens, fold } from './text.js';
 
 // Recherche augmentée par le Case Graph : si la question nomme un protagoniste, on ajoute ses déclarations
 // structurées, celles qui le concernent, et les éléments techniques des incohérences qui le visent.
-const FACT_KINDS = ['SEEN', 'AT_HOME', 'NO_PHONE', 'NOT_AT_PLACE', 'VOICE_ID', 'HEARD', 'MESSAGE_SENT'];
+const FACT_KINDS = ['SEEN', 'AT_HOME', 'NO_PHONE', 'NOT_AT_PLACE', 'VOICE_ID', 'HEARD', 'MESSAGE_SENT', 'CLAIM'];
 export function factPassages(data, question, k = 5) {
   const f = fold(question);
   const ids = new Set(data.persons.filter((p) => ['MIS_EN_CAUSE', 'TEMOIN', 'VICTIME'].includes(p.role) && f.includes(fold(p.last))).map((p) => p.id));
@@ -43,16 +43,16 @@ export function buildChunks(docs, maxLen = 650) {
 }
 
 export class Bm25 {
-  constructor(chunks, k1 = 1.3, b = 0.72) {
+  constructor(chunks, k1 = 1.3, b = 0.72, tok = tokens) {
     this.chunks = chunks;
-    this.k1 = k1; this.b = b;
-    this.docs = chunks.map((c) => { const t = tokens(c.text); const tf = new Map(); for (const x of t) tf.set(x, (tf.get(x) || 0) + 1); return { len: t.length, tf }; });
+    this.k1 = k1; this.b = b; this.tok = tok;
+    this.docs = chunks.map((c) => { const t = tok(c.text); const tf = new Map(); for (const x of t) tf.set(x, (tf.get(x) || 0) + 1); return { len: t.length, tf }; });
     this.avg = this.docs.reduce((a, d) => a + d.len, 0) / Math.max(1, this.docs.length);
     this.df = new Map();
     for (const d of this.docs) for (const t of d.tf.keys()) this.df.set(t, (this.df.get(t) || 0) + 1);
   }
   search(query, k = 8, filter = null) {
-    const q = [...new Set(tokens(query))];
+    const q = [...new Set(this.tok(query))];
     const N = this.docs.length;
     const res = [];
     this.docs.forEach((d, i) => {

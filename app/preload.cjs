@@ -28,6 +28,14 @@ contextBridge.exposeInMainWorld('lccc', {
     },
     abort: (id) => ipcRenderer.invoke('llm:abort', id),
   },
+  settings: {
+    get: () => ipcRenderer.invoke('settings:get'),
+    set: (patch) => ipcRenderer.invoke('settings:set', patch),
+  },
+  cloud: {
+    test: () => ipcRenderer.invoke('cloud:test'),
+    chat: (req) => ipcRenderer.invoke('cloud:chat', req),
+  },
   exportFile: (opts) => ipcRenderer.invoke('export:save', opts),
   reveal: (p) => ipcRenderer.invoke('app:reveal', p),
   capture: (name) => ipcRenderer.invoke('app:capture', name),

@@ -1,0 +1,322 @@
+{
+  "name": "French criminal procedure knowledge base (English paraphrases) for the LCCC agents",
+  "version": "2026-10-04",
+  "disclaimer": "Plain-English paraphrases written for a hackathon prototype. They are not official translations. Every entry must be checked against Legifrance before any real use. Entries marked 'web-checked' were cross-checked online on 2026-10-04; the others come from domain knowledge.",
+  "sources": {
+    "CPP": "https://www.legifrance.gouv.fr/codes/texte_lc/LEGITEXT000006071154",
+    "CP": "https://www.legifrance.gouv.fr/codes/texte_lc/LEGITEXT000006070719",
+    "JCRV": "https://www.justice.gouv.fr/sites/default/files/2026-07/Annexe%201%20-%20Tableau%20entr%C3%A9e%20en%20vigueur%20des%20dispositions%20p%C3%A9nales%20de%20la%20loi%20JCRV.pdf"
+  },
+  "entries": [
+    {
+      "id": "CPP-53", "code": "CPP", "article": "Art. 53", "phase": "PHASE_1", "verification": "web-checked",
+      "title": "Flagrant offence investigation (enquete de flagrance): duration",
+      "text": "A flagrance investigation can be carried out without interruption for 8 days from the offence. If the investigation cannot be deferred and the offence is punishable by at least 5 years' imprisonment, the Public Prosecutor may extend it once for a further 8 days (16 days in total).",
+      "deadline": { "n": 8, "unit": "day", "extension": { "n": 8, "unit": "day", "by": "Public Prosecutor", "condition": "offence punishable by 5+ years and investigation cannot be deferred" }, "trigger": "discovery of the offence", "actor": "Judicial police under the direction of the Public Prosecutor" },
+      "risk": "Acts performed under flagrance rules after the deadline (without extension) may be annulled.",
+      "keywords": ["flagrance", "flagrant", "8 days", "16 days", "investigation", "extension", "prosecutor", "police"]
+    },
+    {
+      "id": "CPP-54", "code": "CPP", "article": "Art. 54", "phase": "PHASE_1", "verification": "domain knowledge",
+      "title": "Scene examination by the judicial police officer",
+      "text": "In a flagrant felony, the judicial police officer informs the Public Prosecutor immediately, goes to the scene without delay, makes all useful findings and preserves the evidence likely to disappear.",
+      "risk": "Missing or late scene report weakens the chain of evidence.",
+      "keywords": ["scene", "findings", "constatations", "officer", "preserve evidence", "inform prosecutor"]
+    },
+    {
+      "id": "CPP-56", "code": "CPP", "article": "Art. 56", "phase": "PHASE_1", "verification": "domain knowledge",
+      "title": "Searches and seizures: inventory and sealing of exhibits",
+      "text": "Objects and documents seized are immediately inventoried and placed under seal (scelle). The chain of custody of seals must be traceable from seizure to analysis; any discrepancy in seal numbering or description must be explained.",
+      "risk": "A broken or inconsistent chain of custody may lead to the annulment of the seizure and of the expert analysis based on it.",
+      "keywords": ["search", "seizure", "seal", "scelle", "inventory", "chain of custody", "exhibit", "numbering"]
+    },
+    {
+      "id": "CPP-57", "code": "CPP", "article": "Art. 57", "phase": "PHASE_1", "verification": "domain knowledge",
+      "title": "Search of a home: presence of the occupant or two witnesses",
+      "text": "A search of a home takes place in the presence of the person concerned or, failing that, of a representative or two witnesses chosen by the officer. The report and the inventory are signed by them.",
+      "risk": "A search without the required persons present is a classic ground for nullity.",
+      "keywords": ["search", "home", "presence", "witnesses", "occupant", "signature", "perquisition"]
+    },
+    {
+      "id": "CPP-59", "code": "CPP", "article": "Art. 59", "phase": "PHASE_1", "verification": "domain knowledge",
+      "title": "Search hours",
+      "text": "Except in specific cases (request from inside the premises, organised crime regimes, emergencies provided by law), home searches cannot begin before 6 a.m. or after 9 p.m.",
+      "risk": "A night-time search outside the legal exceptions may be annulled.",
+      "keywords": ["search", "hours", "night", "6 a.m.", "9 p.m.", "perquisition"]
+    },
+    {
+      "id": "CPP-60-1", "code": "CPP", "article": "Art. 60-1", "phase": "PHASE_1", "verification": "domain knowledge",
+      "title": "Requisitions for information (telephone records, CCTV, documents)",
+      "text": "The officer may require any person, body or operator to hand over information useful to the investigation, including telephone billing records and video recordings.",
+      "keywords": ["requisition", "telephone records", "operator", "fadettes", "cctv", "video", "information"]
+    },
+    {
+      "id": "CPP-62-2", "code": "CPP", "article": "Art. 62-2", "phase": "PHASE_1", "verification": "domain knowledge",
+      "title": "Police custody (garde a vue): conditions",
+      "text": "Custody is a measure of constraint decided by a judicial police officer under the control of the judicial authority, against a person suspected on plausible grounds of an offence punishable by imprisonment, when it is the only way to achieve one of the objectives listed by law.",
+      "keywords": ["custody", "garde a vue", "constraint", "plausible reasons", "suspect"]
+    },
+    {
+      "id": "CPP-63", "code": "CPP", "article": "Art. 63", "phase": "PHASE_1", "verification": "web-checked",
+      "title": "Police custody: duration, extension and start time",
+      "text": "Custody cannot exceed 24 hours. It can be extended once for 24 more hours (48 hours in total) by written and reasoned authorisation of the Public Prosecutor, for offences punishable by at least one year's imprisonment. The start time of the measure is, where applicable, the time at which the person was apprehended (Art. 63, III).",
+      "deadline": { "n": 24, "unit": "hour", "extension": { "n": 24, "unit": "hour", "by": "Public Prosecutor", "condition": "written and reasoned authorisation before the first 24 hours expire" }, "trigger": "time of apprehension", "actor": "Judicial police officer under prosecutor control" },
+      "risk": "A start time later than the apprehension, or an extension authorised after expiry, may ground a nullity request against the custody and the statements taken.",
+      "keywords": ["custody", "garde a vue", "24 hours", "48 hours", "extension", "prolongation", "start time", "apprehension", "interpellation", "how long", "maximum duration", "last", "murder", "custody duration"]
+    },
+    {
+      "id": "CPP-63-1", "code": "CPP", "article": "Art. 63-1", "phase": "PHASE_1", "verification": "domain knowledge",
+      "title": "Custody: immediate notification of rights",
+      "text": "The person placed in custody is immediately informed of the placement, its duration and extensions, the offence, and of the rights to inform a relative and employer, to a medical examination, to a lawyer, to an interpreter, to consult certain documents and to remain silent.",
+      "risk": "Late notification of rights is a frequent ground for nullity.",
+      "keywords": ["rights", "notification", "custody", "lawyer", "silence", "doctor", "interpreter", "relative"]
+    },
+    {
+      "id": "CPP-63-3-1", "code": "CPP", "article": "Art. 63-3-1 and 63-4-2", "phase": "PHASE_1", "verification": "domain knowledge",
+      "title": "Custody: assistance of a lawyer",
+      "text": "From the start of custody the person may ask to be assisted by a lawyer. Hearings cannot start, except in urgent cases authorised by law, before a 2-hour period following the notice to the lawyer.",
+      "keywords": ["lawyer", "avocat", "custody", "hearing", "2 hours", "assistance"]
+    },
+    {
+      "id": "CPP-706-88", "code": "CPP", "article": "Art. 706-73 and 706-88", "phase": "PHASE_1", "verification": "web-checked",
+      "title": "Extended custody (up to 96 hours) for organised crime only",
+      "text": "Custody can exceptionally be extended by two further periods of 24 hours (96 hours in total) only for offences listed in Art. 706-73 (for example murder committed by an organised gang). An ordinary murder, without organised-gang elements, stays within the 48-hour ceiling of Art. 63.",
+      "deadline": { "n": 96, "unit": "hour", "trigger": "time of apprehension", "actor": "Judge (JLD or investigating judge) authorises the additional periods", "condition": "offence listed in Art. 706-73" },
+      "risk": "Applying the 96-hour regime to an offence outside Art. 706-73 makes the custody beyond 48 hours irregular.",
+      "keywords": ["96 hours", "organised crime", "bande organisee", "706-73", "706-88", "custody", "extension"]
+    },
+    {
+      "id": "CPP-74", "code": "CPP", "article": "Art. 74", "phase": "PHASE_1", "verification": "domain knowledge",
+      "title": "Discovery of a body",
+      "text": "When a body is discovered and the cause of death is unknown or suspicious, the officer informs the Public Prosecutor, who may go to the scene and order forensic examinations. When the death is clearly violent, the flagrance regime applies.",
+      "keywords": ["body", "corpse", "death", "discovery", "cause of death", "forensic"]
+    },
+    {
+      "id": "CPP-230-28", "code": "CPP", "article": "Art. 230-28 and 230-29", "phase": "PHASE_1", "verification": "web-checked (JCRV law 2026-651)",
+      "title": "Judicial autopsy and return of the body",
+      "text": "A judicial autopsy is ordered by the Public Prosecutor or the investigating judge and carried out by a forensic doctor. Since the law of 23 July 2026 (JCRV), relatives are informed that an autopsy was ordered, and the body is in principle returned to the family within one month of the autopsy, unless public-health constraints or the needs of the investigation require otherwise.",
+      "deadline": { "n": 1, "unit": "month", "trigger": "date of the autopsy", "actor": "Public Prosecutor / investigating judge" },
+      "keywords": ["autopsy", "forensic", "body", "return", "restitution", "family", "one month"]
+    },
+    {
+      "id": "CPP-79", "code": "CPP", "article": "Art. 79 and 80", "phase": "PHASE_2", "verification": "domain knowledge",
+      "title": "Judicial investigation is mandatory for felonies; opening by the prosecutor",
+      "text": "A judicial investigation (information judiciaire) is mandatory for felonies such as murder. It is opened by the Public Prosecutor's introductory submission (requisitoire introductif) to the investigating judge.",
+      "keywords": ["judicial investigation", "information", "felony", "requisitoire introductif", "investigating judge", "mandatory"]
+    },
+    {
+      "id": "CPP-80-1", "code": "CPP", "article": "Art. 80-1", "phase": "PHASE_2", "verification": "domain knowledge",
+      "title": "Placement under formal investigation (mise en examen)",
+      "text": "The investigating judge can place under formal investigation only persons against whom there is serious or corroborating evidence making it likely that they took part in the offence.",
+      "keywords": ["mise en examen", "formal investigation", "serious evidence", "charges"]
+    },
+    {
+      "id": "CPP-81", "code": "CPP", "article": "Art. 81", "phase": "PHASE_2", "verification": "domain knowledge",
+      "title": "Investigation for and against; mandatory personality inquiry for felonies",
+      "text": "The investigating judge carries out every act useful to establish the truth, looking for evidence both against and in favour of the person. In felony cases, a personality inquiry on the person under formal investigation (material, family and social situation) is mandatory.",
+      "keywords": ["personality inquiry", "enquete de personnalite", "against and in favour", "charge et decharge", "felony", "mandatory"]
+    },
+    {
+      "id": "CPP-82-1", "code": "CPP", "article": "Art. 82-1", "phase": "PHASE_2", "verification": "web-checked",
+      "title": "Requests for investigative acts by the parties",
+      "text": "Parties may ask in writing for a hearing, an interrogation or any useful act. If the judge does not grant the request, a reasoned order must be issued within one month of receipt. In addition, when four months have passed since the last appearance of the person under formal investigation, that person may request an interrogation, which the judge must carry out within 30 days of receipt of the request.",
+      "deadline": { "n": 1, "unit": "month", "trigger": "receipt of the written request at the court registry", "actor": "Investigating judge", "extra": { "n": 30, "unit": "day", "trigger": "receipt of an interrogation request after 4 months without appearance" } },
+      "risk": "No answer within the time limit allows the party to refer the matter to the president of the investigation chamber.",
+      "keywords": ["request", "investigative acts", "demande d'actes", "one month", "30 days", "interrogation", "4 months", "reasoned order"]
+    },
+    {
+      "id": "CPP-116", "code": "CPP", "article": "Art. 116", "phase": "PHASE_2", "verification": "domain knowledge",
+      "title": "First appearance before the investigating judge",
+      "text": "At the first appearance, the judge informs the person of the facts, of the right to remain silent, to make statements or to answer questions, and of the right to a lawyer, before deciding on formal investigation.",
+      "keywords": ["first appearance", "interrogatoire de premiere comparution", "IPC", "silence", "lawyer"]
+    },
+    {
+      "id": "CPP-144", "code": "CPP", "article": "Art. 137 and 144", "phase": "PHASE_2", "verification": "domain knowledge",
+      "title": "Pre-trial detention: exceptional and reasoned",
+      "text": "Liberty is the rule. Pre-trial detention can only be ordered if it is the only way to achieve one of the objectives listed in Art. 144 (preserving evidence, preventing pressure on witnesses or collusion, protecting the person, ensuring appearance, ending the disturbance to public order in felony cases) and if judicial supervision or electronic house arrest would be insufficient.",
+      "keywords": ["pre-trial detention", "detention provisoire", "144", "public order", "witness pressure", "judicial supervision"]
+    },
+    {
+      "id": "CPP-145-2", "code": "CPP", "article": "Art. 145-2", "phase": "PHASE_2", "verification": "web-checked (partial) + domain knowledge",
+      "title": "Pre-trial detention in felony cases: duration and ceilings",
+      "text": "In felony cases, detention cannot initially exceed one year. The liberty and detention judge (JLD) may extend it by periods of up to six months after an adversarial hearing. The total cannot exceed two years when the sentence incurred is below 20 years, and three years otherwise (four years in certain cases, such as offences committed abroad or organised crime).",
+      "deadline": { "n": 1, "unit": "year", "extension": { "n": 6, "unit": "month", "by": "Liberty and detention judge (JLD)", "condition": "reasoned order after adversarial hearing, before expiry" }, "ceiling": { "under20": "2 years", "otherwise": "3 years", "special": "4 years" }, "trigger": "placement in pre-trial detention", "actor": "JLD, on referral by the investigating judge; the prosecutor files submissions" },
+      "risk": "Detention continued without a valid extension order before expiry is unlawful and leads to release.",
+      "keywords": ["pre-trial detention", "felony", "one year", "six months", "extension", "ceiling", "3 years", "JLD"]
+    },
+    {
+      "id": "CPP-148", "code": "CPP", "article": "Art. 148", "phase": "PHASE_2", "verification": "web-checked",
+      "title": "Request for release (demande de mise en liberte)",
+      "text": "The request is sent to the investigating judge, who immediately forwards the file to the Public Prosecutor for submissions. Unless the judge grants it, the judge must forward it with a reasoned opinion to the JLD within 5 days of the communication to the prosecutor. The JLD rules within 3 working days; failing that, the person may refer the request directly to the investigation chamber. The law of 23 July 2026 adds that a new request cannot be filed while a previous one is pending.",
+      "deadline": { "n": 5, "unit": "day", "trigger": "communication of the request to the Public Prosecutor", "actor": "Investigating judge (then JLD within 3 working days)" },
+      "risk": "Missing the deadline lets the person refer the case directly to the investigation chamber and may lead to release.",
+      "keywords": ["release", "demande de mise en liberte", "DML", "5 days", "3 working days", "JLD", "investigating judge", "prosecutor submissions"]
+    },
+    {
+      "id": "CPP-156", "code": "CPP", "article": "Art. 156 and 161", "phase": "PHASE_2", "verification": "domain knowledge",
+      "title": "Expert opinions: appointment and time limit",
+      "text": "When a technical question arises, the investigating judge may order an expert opinion. The order appointing the expert sets a time limit for filing the report, which may be extended on reasoned request.",
+      "keywords": ["expert", "expertise", "appointment", "time limit", "report", "DNA", "toxicology", "psychiatric"]
+    },
+    {
+      "id": "CPP-167", "code": "CPP", "article": "Art. 167", "phase": "PHASE_2", "verification": "domain knowledge",
+      "title": "Notification of expert conclusions to the parties",
+      "text": "The judge notifies the expert conclusions to the parties and their lawyers and sets a time limit within which they may submit observations or ask for further or counter expert opinions.",
+      "keywords": ["expert conclusions", "notification", "counter expertise", "observations"]
+    },
+    {
+      "id": "CPP-171", "code": "CPP", "article": "Art. 171 and 802", "phase": "PHASE_2", "verification": "domain knowledge",
+      "title": "Procedural nullity: substantial formality and harm",
+      "text": "There is nullity when a substantial formality provided by law has been disregarded and this has harmed the interests of the party concerned (no nullity without harm, Art. 802).",
+      "keywords": ["nullity", "nullite", "procedural defect", "vice de procedure", "substantial formality", "harm", "grief"]
+    },
+    {
+      "id": "CPP-173-1", "code": "CPP", "article": "Art. 173-1", "phase": "PHASE_2", "verification": "domain knowledge + JCRV note",
+      "title": "Time limit for nullity requests during the judicial investigation",
+      "text": "The person under formal investigation must raise nullities of acts performed before the first appearance within six months of being placed under formal investigation (the same applies after each later interrogation for the acts preceding it). The law of 23 July 2026 reduces this time limit to four months; its date of entry into force must be checked.",
+      "deadline": { "n": 6, "unit": "month", "trigger": "placement under formal investigation (first appearance)", "actor": "Defence (the prosecutor monitors the risk)" },
+      "risk": "Custody or search irregularities can be raised by the defence during this window.",
+      "keywords": ["nullity", "six months", "four months", "mise en examen", "first appearance", "request"]
+    },
+    {
+      "id": "CPP-175", "code": "CPP", "article": "Art. 175", "phase": "PHASE_2", "verification": "web-checked",
+      "title": "Notice of end of investigation and final submissions",
+      "text": "When the investigation appears complete, the judge notifies the parties and sends the file to the prosecutor. Parties then have one month if a person under investigation is detained (three months otherwise) to submit observations, request acts or raise nullities; the prosecutor files final submissions within the same time limit.",
+      "deadline": { "n": 1, "unit": "month", "trigger": "notice of end of investigation (detained person)", "actor": "Prosecutor, defence and civil parties", "alt": "3 months if no one is detained" },
+      "keywords": ["end of investigation", "avis de fin d'information", "final submissions", "one month", "three months", "requisitoire definitif"]
+    },
+    {
+      "id": "CPP-801", "code": "CPP", "article": "Art. 801", "phase": "ALL", "verification": "web-checked",
+      "title": "Computation of time limits",
+      "text": "Every time limit expires on its last day at midnight. A time limit that would expire on a Saturday, Sunday or public holiday is extended to the next working day.",
+      "keywords": ["computation", "time limit", "deadline", "Saturday", "Sunday", "holiday", "midnight"]
+    },
+    {
+      "id": "CPP-380-9", "code": "CPP", "article": "Art. 380-2 and 380-9", "phase": "PHASE_3", "verification": "web-checked",
+      "title": "Appeal against an Assize Court verdict",
+      "text": "The accused, the Public Prosecutor and the civil party (on civil interests) may appeal a conviction by the Assize Court. The appeal must be lodged within 10 days of the pronouncement of the verdict; the case is then retried by another Assize Court.",
+      "deadline": { "n": 10, "unit": "day", "trigger": "pronouncement of the verdict", "actor": "Accused, Public Prosecutor, civil party" },
+      "keywords": ["appeal", "assize court", "verdict", "10 days", "cour d'assises"]
+    },
+    {
+      "id": "CPP-568", "code": "CPP", "article": "Art. 568", "phase": "PHASE_3", "verification": "web-checked",
+      "title": "Appeal to the Court of Cassation (pourvoi)",
+      "text": "The Public Prosecutor and all parties have five clear days after the day the decision was pronounced to lodge an appeal on points of law with the Court of Cassation. (Art. 576 concerns the form of the declaration, not the time limit.)",
+      "deadline": { "n": 5, "unit": "clear day", "trigger": "day after the pronouncement of the decision", "actor": "Prosecution or defence" },
+      "keywords": ["cassation", "pourvoi", "five clear days", "points of law", "supreme court"]
+    },
+    {
+      "id": "CP-221-1", "code": "CP", "article": "Art. 221-1", "phase": "QUALIFICATION", "verification": "domain knowledge",
+      "title": "Murder (meurtre)",
+      "text": "Intentionally causing the death of another person is murder, punishable by 30 years' criminal imprisonment. Intent to kill is usually inferred from the weapon, the number and location of blows (vital areas), and their violence.",
+      "keywords": ["murder", "meurtre", "intent to kill", "30 years", "qualification"]
+    },
+    {
+      "id": "CP-221-3", "code": "CP", "article": "Art. 221-3 and 132-72", "phase": "QUALIFICATION", "verification": "domain knowledge",
+      "title": "Premeditated murder (assassinat)",
+      "text": "Murder committed with premeditation or by ambush is punishable by life imprisonment. Premeditation is the plan formed before the act (Art. 132-72); typical indicators are a weapon brought to the scene, reconnaissance, preparations or an ambush.",
+      "keywords": ["premeditation", "assassinat", "life imprisonment", "weapon brought", "ambush", "guet-apens", "planning"]
+    },
+    {
+      "id": "CP-221-2", "code": "CP", "article": "Art. 221-2", "phase": "QUALIFICATION", "verification": "domain knowledge",
+      "title": "Murder linked to another offence",
+      "text": "Murder that precedes, accompanies or follows another felony, or that aims to prepare or facilitate a misdemeanour (such as theft) or the escape or impunity of its author, is punishable by life imprisonment. (This is Art. 221-2, not Art. 221-4.)",
+      "keywords": ["murder", "theft", "facilitate", "another offence", "impunity", "life imprisonment"]
+    },
+    {
+      "id": "CP-221-4", "code": "CP", "article": "Art. 221-4", "phase": "QUALIFICATION", "verification": "domain knowledge",
+      "title": "Aggravating circumstances of murder",
+      "text": "Murder is punishable by life imprisonment when committed, among other cases, against a minor under 15, a particularly vulnerable person, a spouse or former spouse, a police officer or other person holding public authority, a witness or victim to prevent a complaint or testimony, or by an organised gang.",
+      "keywords": ["aggravating circumstances", "vulnerable", "spouse", "police officer", "witness", "organised gang", "life imprisonment"]
+    },
+    {
+      "id": "CP-222-7", "code": "CP", "article": "Art. 222-7 and 222-8", "phase": "QUALIFICATION", "verification": "domain knowledge",
+      "title": "Violence causing death without intent to kill",
+      "text": "Intentional violence that causes death without intent to kill is punishable by 15 years' criminal imprisonment, raised to 20 years with an aggravating circumstance, notably the use or threat of a weapon (such as a knife).",
+      "keywords": ["violence causing death", "without intent", "15 years", "20 years", "weapon", "knife", "violences mortelles"]
+    },
+    {
+      "id": "CP-122-5", "code": "CP", "article": "Art. 122-5 and 122-6", "phase": "QUALIFICATION", "verification": "domain knowledge",
+      "title": "Self-defence",
+      "text": "A person who, faced with an unjustified attack on themselves or another, performs at the same time an act required by the need for self-defence is not criminally liable, unless the means used are disproportionate to the seriousness of the attack. Indicators: injuries on the suspect, weapon held by the victim, entry of the victim into the suspect's home.",
+      "keywords": ["self-defence", "legitime defense", "attack", "proportionate", "injuries", "home", "irresponsibility"]
+    },
+    {
+      "id": "CP-122-1", "code": "CP", "article": "Art. 122-1", "phase": "PERSONALISATION", "verification": "domain knowledge",
+      "title": "Mental disorder: abolished or impaired discernment",
+      "text": "A person whose discernment was abolished by a psychiatric or neuropsychological disorder at the time of the act is not criminally liable. If discernment was only impaired, the person remains liable but the maximum sentence is reduced by one third (or, for life imprisonment, to 30 years). A psychiatric expert opinion is the usual source.",
+      "keywords": ["psychiatric", "discernment", "mental disorder", "irresponsibility", "reduction", "expert"]
+    },
+    {
+      "id": "CP-132-1", "code": "CP", "article": "Art. 132-1", "phase": "PERSONALISATION", "verification": "domain knowledge",
+      "title": "Individualisation of the sentence",
+      "text": "Within the legal maximum, the sentence is set according to the circumstances of the offence and the personality of the offender, as well as their material, family and social situation.",
+      "keywords": ["sentence", "individualisation", "personality", "circumstances", "132-1"]
+    },
+    {
+      "id": "CP-132-8", "code": "CP", "article": "Art. 132-8", "phase": "PERSONALISATION", "verification": "domain knowledge",
+      "title": "Legal recidivism for felonies",
+      "text": "A person already finally convicted of a felony, or of a misdemeanour punishable by 10 years' imprisonment, who commits a felony is a legal recidivist: the maximum sentence is raised (for example to life imprisonment when the felony is punishable by 20 or 30 years). The criminal record (bulletin no.1) is the source.",
+      "keywords": ["recidivism", "recidive", "criminal record", "casier judiciaire", "bulletin no 1", "prior conviction"]
+    },
+    {
+      "id": "CP-311-1", "code": "CP", "article": "Art. 311-1 and 311-3", "phase": "QUALIFICATION", "verification": "domain knowledge",
+      "title": "Theft",
+      "text": "Theft is the fraudulent taking of another's property, punishable by 3 years' imprisonment and a fine (more when aggravated).",
+      "keywords": ["theft", "vol", "property", "stolen"]
+    },
+    {
+      "id": "CP-434-4", "code": "CP", "article": "Art. 434-4", "phase": "PERSONALISATION", "verification": "domain knowledge",
+      "title": "Tampering with a crime scene or destroying evidence",
+      "text": "Altering the scene of a felony or misdemeanour, or destroying, concealing or cleaning traces or evidence, in order to obstruct the discovery of the truth, is a separate offence (3 years' imprisonment).",
+      "keywords": ["tampering", "cleaning", "destroying evidence", "scene", "concealment", "washed"]
+    }
+  ],
+  "stages": [
+    {
+      "id": "PHASE_1", "name": "Phase 1 - Police investigation (flagrance and custody)",
+      "items": [
+        { "id": "P1-01", "label": "Initial intervention report", "docTypes": ["PV_INTERVENTION", "FICHE_CIC"], "legal": "CPP-54", "required": true, "producedBy": "Patrol / police control room" },
+        { "id": "P1-02", "label": "Scene examination report", "docTypes": ["PV_CONSTATATIONS"], "legal": "CPP-54", "required": true, "producedBy": "Judicial police officer" },
+        { "id": "P1-03", "label": "Photographs and scene plan", "docTypes": ["PLANCHE_PHOTO"], "legal": "CPP-54", "required": false, "producedBy": "Forensic identification unit" },
+        { "id": "P1-04", "label": "Witness hearings", "docTypes": ["AUDITION_TEMOIN"], "legal": "CPP-54", "required": true, "producedBy": "Judicial police officer" },
+        { "id": "P1-05", "label": "Custody placement and notification of rights", "docTypes": ["PV_GAV"], "legal": "CPP-63-1", "required": true, "producedBy": "Judicial police officer" },
+        { "id": "P1-06", "label": "Suspect hearings in custody", "docTypes": ["AUDITION_GAV"], "legal": "CPP-63-3-1", "required": true, "producedBy": "Judicial police officer" },
+        { "id": "P1-07", "label": "Written authorisation to extend custody", "docTypes": ["PROLONGATION_GAV"], "legal": "CPP-63", "required": true, "producedBy": "Public Prosecutor" },
+        { "id": "P1-08", "label": "Search and seizure report", "docTypes": ["PERQUISITION"], "legal": "CPP-56", "required": true, "producedBy": "Judicial police officer" },
+        { "id": "P1-09", "label": "Autopsy report", "docTypes": ["AUTOPSIE"], "legal": "CPP-230-28", "required": true, "producedBy": "Forensic pathologist" },
+        { "id": "P1-10", "label": "CCTV exploitation", "docTypes": ["VIDEO"], "legal": "CPP-60-1", "required": false, "producedBy": "Investigators" },
+        { "id": "P1-11", "label": "Telephone records from the operator", "docTypes": ["TELEPHONIE"], "legal": "CPP-60-1", "required": false, "producedBy": "Telecom operator on requisition" },
+        { "id": "P1-12", "label": "Forensic laboratory reports", "docTypes": ["RAPPORT_LABO", "RAPPORT_TRACES"], "legal": "CPP-56", "required": false, "producedBy": "Forensic laboratory" },
+        { "id": "P1-13", "label": "Investigation summary report", "docTypes": ["SYNTHESE"], "legal": "CPP-54", "required": false, "producedBy": "Lead investigator" }
+      ]
+    },
+    {
+      "id": "PHASE_2", "name": "Phase 2 - Judicial investigation and detention",
+      "items": [
+        { "id": "P2-01", "label": "Introductory submission (requisitoire introductif)", "docTypes": ["REQUISITOIRE"], "legal": "CPP-79", "required": true, "producedBy": "Public Prosecutor" },
+        { "id": "P2-02", "label": "First appearance and formal investigation", "docTypes": ["IPC"], "legal": "CPP-116", "required": true, "producedBy": "Investigating judge" },
+        { "id": "P2-03", "label": "Pre-trial detention order", "docTypes": ["ORDONNANCE_DETENTION"], "legal": "CPP-144", "required": true, "producedBy": "JLD" },
+        { "id": "P2-04", "label": "Rogatory commission", "docTypes": ["COMMISSION_ROGATOIRE"], "legal": "CPP-81", "required": false, "producedBy": "Investigating judge" },
+        { "id": "P2-05", "label": "Expert appointment order", "docTypes": ["ORDONNANCE_EXPERTISE"], "legal": "CPP-156", "required": true, "producedBy": "Investigating judge" },
+        { "id": "P2-06", "label": "DNA expert report", "docTypes": ["EXPERTISE_GENETIQUE"], "legal": "CPP-156", "required": true, "producedBy": "Appointed DNA expert" },
+        { "id": "P2-07", "label": "Toxicology report", "docTypes": ["RAPPORT_TOXICO"], "legal": "CPP-230-28", "required": true, "producedBy": "Toxicology laboratory" },
+        { "id": "P2-08", "label": "Phone extraction report", "docTypes": ["RAPPORT_EXTRACTION_TEL"], "legal": "CPP-60-1", "required": false, "producedBy": "Digital forensics unit" },
+        { "id": "P2-09", "label": "Criminal record (bulletin no.1)", "docTypes": ["CASIER_B1"], "legal": "CP-132-8", "required": true, "producedBy": "National criminal records office" },
+        { "id": "P2-10", "label": "Personality inquiry", "docTypes": ["ENQUETE_PERSONNALITE"], "legal": "CPP-81", "required": true, "producedBy": "Investigator or social inquirer appointed by the judge" },
+        { "id": "P2-11", "label": "Psychiatric expert opinion (customary in homicide cases)", "docTypes": ["EXPERTISE_PSY"], "legal": "CP-122-1", "required": false, "recommended": true, "producedBy": "Psychiatric expert appointed by the judge" },
+        { "id": "P2-12", "label": "Notice of end of investigation", "docTypes": ["AVIS_FIN_INFO"], "legal": "CPP-175", "required": true, "producedBy": "Investigating judge", "later": true },
+        { "id": "P2-13", "label": "Prosecutor's final submissions", "docTypes": ["REQUISITOIRE_DEFINITIF"], "legal": "CPP-175", "required": true, "producedBy": "Public Prosecutor", "later": true },
+        { "id": "P2-14", "label": "Indictment order (referral to the Assize Court)", "docTypes": ["ORDONNANCE_MEA"], "legal": "CPP-175", "required": true, "producedBy": "Investigating judge", "later": true }
+      ]
+    },
+    {
+      "id": "PHASE_3", "name": "Phase 3 - Trial and appeals",
+      "items": [
+        { "id": "P3-01", "label": "Assize Court verdict", "docTypes": ["ARRET_ASSISES"], "legal": "CPP-380-9", "required": true, "producedBy": "Assize Court", "later": true },
+        { "id": "P3-02", "label": "Appeal decision", "docTypes": ["ARRET_APPEL"], "legal": "CPP-380-9", "required": false, "producedBy": "Appeal Assize Court", "later": true },
+        { "id": "P3-03", "label": "Cassation decision", "docTypes": ["ARRET_CASSATION"], "legal": "CPP-568", "required": false, "producedBy": "Court of Cassation", "later": true }
+      ]
+    }
+  ]
+}

@@ -15,6 +15,7 @@ import { buildActions } from './actions.js';
 import { buildGraph } from './graph.js';
 import { buildChunks } from './search.js';
 import { buildEvidence, neutralFindings, victimInfo } from './evidence.js';
+import { runAgents } from '../agents/agents.js';
 
 export const ENGINE_VERSION = '0.1.0';
 
@@ -27,9 +28,10 @@ export const STEPS = [
   ['detect', 'Détection des incohérences et des pièces manquantes'],
   ['rules', 'Moteur de règles procédurales (échéances, contrôles)'],
   ['graph', 'Case Graph, actions et index de recherche'],
+  ['agents', "Agents' tools (the Mistral agents follow in the background)"],
 ];
 
-export async function analyzeCase({ files, pdfjs, docOptions = {}, rules, checklist, refDate, onProgress = () => {}, llmClassify = null }) {
+export async function analyzeCase({ files, pdfjs, docOptions = {}, rules, checklist, kb = null, refDate, onProgress = () => {}, llmClassify = null }) {
   const t0 = Date.now();
   const timings = {};
   const log = [];
@@ -139,7 +141,7 @@ export async function analyzeCase({ files, pdfjs, docOptions = {}, rules, checkl
     pages: d.pages.map((p) => ({ n: p.n, filePage: p.filePage, text: p.text })),
   }));
 
-  return {
+  const result = {
     schema: 'lccc.analysis/1', engine: ENGINE_VERSION, analyzedAt: new Date().toISOString(), refDate, factsDate,
     stats: { files: files.length, documents: docs.length, pages: pageCount, statements: facts.statements.length, phoneRows: facts.phone.reduce((a, p) => a + p.rows.length, 0), ms: Date.now() - t0, timings },
     documents, persons: facts.persons, deponents: facts.deponents, statements: facts.statements, seals: facts.seals,
@@ -150,6 +152,15 @@ export async function analyzeCase({ files, pdfjs, docOptions = {}, rules, checkl
     rulesMeta: { name: rules.name, version: rules.version, disclaimer: rules.disclaimer, computation: rules.computation, rules: rules.rules.map((r) => ({ id: r.id, title: r.title, basis: r.basis, summary: r.summary, kind: r.kind })) },
     checklistMeta: { name: checklist.name, version: checklist.version },
   };
+  // Agents: deployed on every upload (the deadline agent is also re-run daily by the app)
+  if (kb) {
+    onProgress({ step: 'agents', status: 'running' });
+    const t = Date.now();
+    result.agents = runAgents(result, { kb, trigger: 'upload', now: refDate });
+    result.stats.timings.agents = Date.now() - t;
+    onProgress({ step: 'agents', status: 'done', ms: Date.now() - t });
+  }
+  return result;
 }
 
 function textPages(text) {

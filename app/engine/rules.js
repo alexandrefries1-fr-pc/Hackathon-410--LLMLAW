@@ -40,7 +40,7 @@ export function daysBetween(fromIso, toIso) { return Math.round((D(toIso) - D(fr
 const DAYNAMES = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
 export const dayName = (iso) => DAYNAMES[dow(iso)];
 
-function art801(iso, steps) {
+export function art801(iso, steps = []) {
   let d = iso;
   let moved = false;
   while (dow(d) === 0 || dow(d) === 6 || isHoliday(d)) {

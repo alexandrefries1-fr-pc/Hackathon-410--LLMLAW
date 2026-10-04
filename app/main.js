@@ -1,6 +1,6 @@
-// Processus principal Electron : fenêtre, protocole app:// local, garde réseau, coffre chiffré, pont vers le LLM local.
-// Aucune donnée du dossier ne quitte la machine : le renderer n'a accès à aucun réseau,
-// et le seul appel réseau autorisé côté main est Ollama sur 127.0.0.1.
+// Processus principal Electron : fenêtre, protocole app:// local, garde réseau, coffre chiffré, pont vers le LLM.
+// Le renderer n'a accès à aucun réseau. Côté main, deux destinations seulement sont autorisées :
+// Ollama sur 127.0.0.1 (agents en local) et api.mistral.ai (agents en cloud, choisi dans les réglages).
 
 import { app, BrowserWindow, dialog, ipcMain, protocol, session, shell } from 'electron';
 import fs from 'node:fs';
@@ -31,6 +31,11 @@ function assertOllama(url) {
   const h = new URL(url).hostname;
   if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(h)) throw new Error('Appel réseau refusé : seul un LLM local (127.0.0.1) est autorisé.');
 }
+const MISTRAL_API = 'https://api.mistral.ai';
+function assertMistral(url) {
+  if (new URL(url).hostname !== 'api.mistral.ai') throw new Error('Network call refused: only api.mistral.ai is allowed in cloud mode.');
+}
+const cloudStats = { calls: 0, lastCall: null };
 
 // ------------------------------------------------------------------ Fenêtre
 let win;
@@ -148,14 +153,12 @@ ipcMain.handle('llm:chat', async (e, req) => {
   aborts.set(req.id, ctrl);
   const t0 = Date.now();
   try {
-    const body = { model: req.model, messages: req.messages, stream: !!req.stream, options: { temperature: 0.1, num_ctx: 8192, ...(req.options || {}) }, keep_alive: '30m' };
+    // Always streamed from Ollama: a non-streamed answer longer than 300 s (a document read by a 3B model on CPU)
+    // would hit Node's fetch headers timeout. Chunks are forwarded to the renderer only when it asked for streaming.
+    const body = { model: req.model, messages: req.messages, stream: true, options: { temperature: 0.1, num_ctx: 8192, ...(req.options || {}) }, keep_alive: '30m' };
     if (req.format) body.format = req.format;
     const res = await lfetch(`${OLLAMA}/api/chat`, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' }, signal: ctrl.signal });
     if (!res.ok) throw new Error(`Ollama ${res.status} : ${await res.text()}`);
-    if (!req.stream) {
-      const j = await res.json();
-      return { content: j.message?.content ?? '', ms: Date.now() - t0, evalCount: j.eval_count, model: req.model };
-    }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '', full = '', meta = {};
@@ -169,9 +172,10 @@ ipcMain.handle('llm:chat', async (e, req) => {
         buf = buf.slice(i + 1);
         if (!line) continue;
         const j = JSON.parse(line);
+        if (j.error) throw new Error(`Ollama: ${j.error}`);
         const piece = j.message?.content ?? '';
         full += piece;
-        if (piece) e.sender.send('llm:chunk', { id: req.id, content: piece });
+        if (piece && req.stream) e.sender.send('llm:chunk', { id: req.id, content: piece });
         if (j.done) meta = { evalCount: j.eval_count };
       }
     }
@@ -181,6 +185,99 @@ ipcMain.handle('llm:chat', async (e, req) => {
   }
 });
 ipcMain.handle('llm:abort', (_e, id) => { aborts.get(id)?.abort(); return true; });
+
+// ------------------------------------------------------------------ Settings and cloud agents (Mistral API)
+// Settings are sealed (AES-256-GCM, key protected by the OS). The API key never reaches the renderer.
+const SETTINGS_DEFAULT = { agentsBackend: 'cloud', cloudModel: 'mistral-large-latest' };
+const settingsFile = () => path.join(app.getPath('userData'), 'settings.enc');
+function readSettings() {
+  try { return { ...SETTINGS_DEFAULT, ...JSON.parse(readSealed(settingsFile()).toString('utf8')) }; } catch { return { ...SETTINGS_DEFAULT }; }
+}
+function apiKey() { return readSettings().mistralApiKey || process.env.MISTRAL_API_KEY || ''; }
+function publicSettings() {
+  const s = readSettings();
+  const k = apiKey();
+  return { agentsBackend: s.agentsBackend, cloudModel: s.cloudModel, hasKey: !!k, keyHint: k ? `…${k.slice(-4)}` : '', keyFromEnv: !s.mistralApiKey && !!process.env.MISTRAL_API_KEY, cloud: cloudStats };
+}
+ipcMain.handle('settings:get', () => publicSettings());
+ipcMain.handle('settings:set', (_e, patch) => {
+  const s = readSettings();
+  if (patch.agentsBackend && ['cloud', 'local'].includes(patch.agentsBackend)) s.agentsBackend = patch.agentsBackend;
+  if (patch.cloudModel) s.cloudModel = String(patch.cloudModel).slice(0, 80);
+  if (typeof patch.apiKey === 'string') { if (patch.apiKey.trim()) s.mistralApiKey = patch.apiKey.trim(); else delete s.mistralApiKey; }
+  writeSealed(settingsFile(), JSON.stringify(s));
+  return publicSettings();
+});
+async function mistralFetch(pathname, init = {}) {
+  const url = `${MISTRAL_API}${pathname}`;
+  assertMistral(url);
+  const key = apiKey();
+  if (!key) throw new Error('No Mistral API key configured (Settings).');
+  return globalThis.fetch(url, { ...init, headers: { 'content-type': 'application/json', authorization: `Bearer ${key}`, ...(init.headers || {}) } });
+}
+// Models tried in this order when the chosen one is not included in the account's plan (403 tier_not_allowed)
+const CLOUD_FALLBACK = ['mistral-medium-latest', 'mistral-small-latest', 'ministral-8b-latest', 'open-mistral-nemo'];
+const blockedModels = new Set();
+// Rate limit (free plan ~1 request/s): after a 429 the calls are spaced out and retried
+let cloudGap = 0, cloudNext = 0;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function mistralChat(body) {
+  for (let attempt = 0; ; attempt++) {
+    const slot = Math.max(Date.now(), cloudNext);
+    cloudNext = slot + cloudGap;
+    if (slot > Date.now()) await wait(slot - Date.now());
+    const r = await mistralFetch('/v1/chat/completions', { method: 'POST', body: JSON.stringify(body) });
+    if ((r.status === 429 || r.status >= 500) && attempt < 6) {
+      cloudGap = Math.max(cloudGap, 1200);
+      const ra = Number(r.headers.get('retry-after'));
+      await wait(ra > 0 ? ra * 1000 : 1500 * 2 ** Math.min(attempt, 3));
+      continue;
+    }
+    return r;
+  }
+}
+const tierBlocked = (status, text) => status === 403 && /tier|subscription|not available/i.test(text);
+// One chat call with the chosen model, falling back to a model of the plan if needed (the working model is saved)
+async function chatWithFallback(req) {
+  const wanted = req.model || readSettings().cloudModel;
+  const all = [wanted, ...CLOUD_FALLBACK].filter((m, i, a) => a.indexOf(m) === i);
+  const open = all.filter((m) => !blockedModels.has(m));
+  const candidates = open.length ? open : all;
+  let lastErr = '';
+  for (const model of candidates) {
+    const body = { model, messages: req.messages, temperature: 0.1, max_tokens: Math.min(8000, req.maxTokens || 2500) };
+    if (req.format) body.response_format = { type: 'json_schema', json_schema: { name: 'lccc_output', schema: req.format, strict: false } };
+    let r = await mistralChat(body);
+    if (r.status === 400 && req.format) { body.response_format = { type: 'json_object' }; r = await mistralChat(body); }
+    if (r.ok) {
+      if (model !== readSettings().cloudModel) { const s = readSettings(); s.cloudModel = model; writeSealed(settingsFile(), JSON.stringify(s)); }
+      return { r, model, switchedFrom: model !== wanted ? wanted : null };
+    }
+    const text = (await r.text()).slice(0, 200);
+    lastErr = `Mistral API ${r.status}: ${text}`;
+    if (tierBlocked(r.status, text) || r.status === 404) { blockedModels.add(model); continue; }
+    throw new Error(lastErr);
+  }
+  throw new Error(`${lastErr} (no model of your Mistral plan accepted the request)`);
+}
+ipcMain.handle('cloud:test', async () => {
+  try {
+    const r = await mistralFetch('/v1/models');
+    if (!r.ok) return { ok: false, error: `Mistral API ${r.status}${r.status === 401 ? ' (invalid key)' : ''}` };
+    const j = await r.json();
+    const models = (j.data || []).map((m) => m.id).filter((id) => /mistral|ministral|magistral/.test(id)).slice(0, 40);
+    // a 1-token call checks that the chosen model is included in the plan
+    const c = await chatWithFallback({ messages: [{ role: 'user', content: 'ok' }], maxTokens: 1 });
+    return { ok: true, models, model: c.model, switchedFrom: c.switchedFrom };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+ipcMain.handle('cloud:chat', async (_e, req) => {
+  const t0 = Date.now();
+  const { r, model, switchedFrom } = await chatWithFallback(req);
+  const j = await r.json();
+  cloudStats.calls++; cloudStats.lastCall = new Date().toISOString();
+  return { content: j.choices?.[0]?.message?.content ?? '', ms: Date.now() - t0, model, switchedFrom, usage: j.usage || null };
+});
 
 // ------------------------------------------------------------------ Divers
 ipcMain.handle('app:info', () => ({
