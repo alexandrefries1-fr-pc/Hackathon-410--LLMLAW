@@ -13,7 +13,7 @@
 
 import { DOC_TYPES } from './classify.js';
 import { buildActions } from './actions.js';
-import { promptKey, parseJson } from './llm.js';
+import { promptKey, parseJson, parseJsonStrict } from './llm.js';
 import { addDays, addMonths, daysBetween, art801 } from './rules.js';
 import { fmtDate, clip } from './text.js';
 import { LegalRag } from '../agents/legalRag.js';
@@ -96,12 +96,22 @@ function docInput(d, maxChars) {
 
 async function call(chat, cache, model, messages, format, opts) {
   const key = await promptKey(model, messages, format);
-  const hit = cache?.get(key);
+  const hit = opts.fresh ? null : cache?.get(key);
   if (hit) return { ...hit, cached: true };
   const r = await chat({ messages, format, ...opts });
-  const res = { content: r.content, ms: r.ms, model: r.model || model, at: new Date().toISOString() };
+  const res = { content: r.content, ms: r.ms, model: r.model || model, finish: r.finish || null, cached: !!r.cached, at: new Date().toISOString() };
   cache?.set(key, res);
   return res;
+}
+
+// One LLM call with its JSON: a cached answer that is cut or invalid is asked again (fresh);
+// an answer cut by the token limit is repaired (the last incomplete item is dropped) and marked.
+async function ask(llm, cache, messages, format, opts) {
+  let r = await call(llm.chat, cache, llm.model, messages, format, opts);
+  if (r.cached && (r.finish === 'length' || !parseJsonStrict(r.content))) r = await call(llm.chat, cache, llm.model, messages, format, { ...opts, fresh: true });
+  const strict = parseJsonStrict(r.content);
+  const j = strict ?? parseJson(r.content);
+  return { r, j, repaired: !strict && !!j, err: j ? null : `unreadable JSON${r.finish === 'length' ? ' (answer cut by the token limit)' : ''}` };
 }
 
 // ------------------------------------------------------------------ main
@@ -117,6 +127,8 @@ export async function analyzeWithLlm(base, { llm, kb, refDate, cache = null, onP
   const local = llm.backend === 'local';
   const maxChars = local ? 7000 : 60000; // a 3B model on CPU reads ~45 tokens/s: long documents are cut (head + tail)
   const opts = local ? { numCtx: 12288, maxTokens: 2200 } : { maxTokens: 4000 };
+  // the case agents write long lists (events, contradictions with quotes): larger output budget
+  const agentOpts = local ? { numCtx: 16384, maxTokens: 3000 } : { maxTokens: 14000 };
   const calls = [];
   const rejected = [];
   const track = (name, r, err) => calls.push({ name, ms: r?.ms ?? 0, cached: !!r?.cached, error: err || null, model: r?.model || null });
@@ -128,7 +140,7 @@ export async function analyzeWithLlm(base, { llm, kb, refDate, cache = null, onP
     const messages = [{ role: 'system', content: `${SYSTEM_BASE}\nTask: read ONE document and extract its structured content. doc_type must be one of: ${TYPE_KEYS.map((k) => `${k} (${DOC_TYPE_EN[k] || DOC_TYPES[k].label})`).join(', ')}.` },
       { role: 'user', content: `Document id: ${d.id}\nFile name: ${d.fileName}\n<<<\n${docInput(d, maxChars)}\n>>>` }];
     let r = null, j = null, err = null;
-    try { r = await call(llm.chat, cache, llm.model, messages, READER_SCHEMA, opts); j = parseJson(r.content); if (!j) err = 'unreadable JSON'; } catch (e) { err = String(e.message || e); }
+    try { ({ r, j, err } = await ask(llm, cache, messages, READER_SCHEMA, opts)); } catch (e) { err = String(e.message || e); }
     track(`reader ${d.id}`, r, err);
     onProgress({ step: 'llm-read', status: 'running', detail: `${++doneA}/${docs.length}` });
     return { doc: d, j, err };
@@ -168,9 +180,10 @@ export async function analyzeWithLlm(base, { llm, kb, refDate, cache = null, onP
     const messages = [{ role: 'system', content: `${SYSTEM_BASE}\nYou are the ${mission}` },
       { role: 'user', content: `Today: ${refDate}\n\n## Case documents (extracted by the document reader)\n${material}\n\n## Legal extracts (knowledge base)\n${law.text}` }];
     let r = null, j = null, err = null;
-    try { r = await call(llm.chat, cache, llm.model, messages, schema, opts); j = parseJson(r.content); if (!j) err = 'unreadable JSON'; } catch (e) { err = String(e.message || e); }
+    let repaired = false;
+    try { ({ r, j, err, repaired } = await ask(llm, cache, messages, schema, agentOpts)); } catch (e) { err = String(e.message || e); }
     track(name, r, err);
-    onProgress({ step: `llm-${name}`, status: err ? 'error' : 'done', detail: err || '' });
+    onProgress({ step: `llm-${name}`, status: err ? 'error' : 'done', detail: err || (repaired ? 'long answer cut: last item dropped' : '') });
     return { j, r, err, law };
   };
 

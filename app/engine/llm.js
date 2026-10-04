@@ -115,6 +115,35 @@ export async function promptKey(model, messages, format) {
   return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
 }
 
+// Strict parse (the whole answer, or the outermost {...} block); null when the JSON is invalid
+export function parseJsonStrict(content) {
+  try { return JSON.parse(content); } catch { /* try the outermost object */ }
+  const m = /\{[\s\S]*\}/.exec(content || '');
+  try { return m ? JSON.parse(m[0]) : null; } catch { return null; }
+}
+
+// Repair of an answer cut by the token limit: keep everything up to the last complete element
+// of an array or object, then close the open brackets. Items cut in the middle are dropped.
+export function repairJson(content) {
+  const s = String(content || '');
+  const start = s.indexOf('{');
+  if (start < 0) return null;
+  const stack = [];
+  const cuts = [];
+  let inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') inStr = true;
+    else if (c === '{' || c === '[') stack.push(c === '{' ? '}' : ']');
+    else if (c === '}' || c === ']') { stack.pop(); cuts.push({ at: i + 1, close: stack.slice().reverse().join('') }); if (!stack.length) break; }
+  }
+  for (let k = cuts.length - 1; k >= 0; k--) {
+    try { return JSON.parse(s.slice(start, cuts[k].at) + cuts[k].close); } catch { /* try an earlier cut */ }
+  }
+  return null;
+}
+
 export function parseJson(content) {
-  try { return JSON.parse(content); } catch { const m = /\{[\s\S]*\}/.exec(content); return m ? JSON.parse(m[0]) : null; }
+  return parseJsonStrict(content) ?? repairJson(content);
 }

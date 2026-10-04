@@ -203,7 +203,7 @@ ipcMain.handle('settings:get', () => publicSettings());
 ipcMain.handle('settings:set', (_e, patch) => {
   const s = readSettings();
   if (patch.agentsBackend && ['cloud', 'local'].includes(patch.agentsBackend)) s.agentsBackend = patch.agentsBackend;
-  if (patch.cloudModel) s.cloudModel = String(patch.cloudModel).slice(0, 80);
+  if (patch.cloudModel) { s.cloudModel = String(patch.cloudModel).slice(0, 80); delete s.cloudModelWanted; blockedModels.delete(s.cloudModel); }
   if (typeof patch.apiKey === 'string') { if (patch.apiKey.trim()) s.mistralApiKey = patch.apiKey.trim(); else delete s.mistralApiKey; }
   writeSealed(settingsFile(), JSON.stringify(s));
   return publicSettings();
@@ -238,19 +238,27 @@ async function mistralChat(body) {
 }
 const tierBlocked = (status, text) => status === 403 && /tier|subscription|not available/i.test(text);
 // One chat call with the chosen model, falling back to a model of the plan if needed (the working model is saved)
+// The model chosen by the user is retried first after a fallback (e.g. once the plan has been upgraded).
 async function chatWithFallback(req) {
+  const preferred = readSettings().cloudModelWanted;
   const wanted = req.model || readSettings().cloudModel;
-  const all = [wanted, ...CLOUD_FALLBACK].filter((m, i, a) => a.indexOf(m) === i);
+  const all = [preferred, wanted, ...CLOUD_FALLBACK].filter((m, i, a) => m && a.indexOf(m) === i);
   const open = all.filter((m) => !blockedModels.has(m));
   const candidates = open.length ? open : all;
   let lastErr = '';
   for (const model of candidates) {
-    const body = { model, messages: req.messages, temperature: 0.1, max_tokens: Math.min(8000, req.maxTokens || 2500) };
+    const body = { model, messages: req.messages, temperature: 0.1, max_tokens: Math.min(16000, req.maxTokens || 2500) };
     if (req.format) body.response_format = { type: 'json_schema', json_schema: { name: 'lccc_output', schema: req.format, strict: false } };
     let r = await mistralChat(body);
     if (r.status === 400 && req.format) { body.response_format = { type: 'json_object' }; r = await mistralChat(body); }
     if (r.ok) {
-      if (model !== readSettings().cloudModel) { const s = readSettings(); s.cloudModel = model; writeSealed(settingsFile(), JSON.stringify(s)); }
+      const s = readSettings();
+      if (model !== s.cloudModel || (s.cloudModelWanted && model === s.cloudModelWanted)) {
+        if (model === s.cloudModelWanted) delete s.cloudModelWanted;
+        else if (!s.cloudModelWanted) s.cloudModelWanted = s.cloudModel;
+        s.cloudModel = model;
+        writeSealed(settingsFile(), JSON.stringify(s));
+      }
       return { r, model, switchedFrom: model !== wanted ? wanted : null };
     }
     const text = (await r.text()).slice(0, 200);
@@ -276,7 +284,7 @@ ipcMain.handle('cloud:chat', async (_e, req) => {
   const { r, model, switchedFrom } = await chatWithFallback(req);
   const j = await r.json();
   cloudStats.calls++; cloudStats.lastCall = new Date().toISOString();
-  return { content: j.choices?.[0]?.message?.content ?? '', ms: Date.now() - t0, model, switchedFrom, usage: j.usage || null };
+  return { content: j.choices?.[0]?.message?.content ?? '', finish: j.choices?.[0]?.finish_reason || null, ms: Date.now() - t0, model, switchedFrom, usage: j.usage || null };
 });
 
 // ------------------------------------------------------------------ Divers
