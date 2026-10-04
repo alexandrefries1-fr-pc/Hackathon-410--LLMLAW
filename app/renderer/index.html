@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'">
+  <title>LCCC · Copilote pénal local</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main>
+      <header class="topbar" id="topbar"></header>
+      <section id="view"></section>
+    </main>
+  </div>
+  <div class="scrim" id="scrim" data-act="close-src"></div>
+  <aside class="drawer" id="drawer"></aside>
+  <div id="modal"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

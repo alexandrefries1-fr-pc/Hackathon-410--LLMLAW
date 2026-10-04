@@ -1,0 +1,946 @@
+// Interface du Copilote pénal local (LCCC). Aucune dépendance externe, aucun accès réseau.
+import * as pdfjsLib from './vendor/pdfjs/pdf.min.mjs';
+import { analyzeCase, STEPS } from '../engine/pipeline.js';
+import { Bm25, askPassages } from '../engine/search.js';
+import { evaluateRules, daysBetween, dayName, isHoliday, addDays } from '../engine/rules.js';
+import { buildActions } from '../engine/actions.js';
+import { explainPrompt, askPrompt, guard, citations, citationsCheck, EXPLAIN_SCHEMA, promptKey, parseJson, classifyPrompt } from '../engine/llm.js';
+import { fmtDate, fmtTime, clip } from '../engine/text.js';
+import { ROLE_LABEL } from '../engine/lexicon.js';
+import { icon } from './icons.js';
+import { initViewer, openSource, closeSource, turnPage, clearViewerCache, esc } from './viewer.js';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
+initViewer(pdfjsLib);
+
+const api = window.lccc;
+const today = () => new Date().toISOString().slice(0, 10);
+const S = {
+  info: null, cases: [], meta: null, files: [], data: null, user: null, view: 'home', rules: null, checklist: null, bm25: null, demoCache: {},
+  llm: { status: null, model: null, busy: {} }, refDate: today(), ui: { tlAll: false, tlTab: 'faits', incFilter: 'all', progress: {}, analyzing: false, chatBusy: false, graphHi: null },
+};
+const PREFERRED_MODELS = ['ministral-3:14b', 'ministral-3:8b', 'mistral-small3.2', 'ministral-3:3b', 'mistral:7b'];
+const LEVEL = {
+  CRITIQUE: ['b-crit', 'Critique'], IMPORTANT: ['b-imp', 'Important'], A_VERIFIER: ['b-verif', 'À vérifier'], SUIVI: ['b-suivi', 'Suivi'],
+  DEPASSEE: ['b-crit', 'Dépassée'], CONFORME: ['b-ok', 'Conforme'], FORTE: ['b-crit', 'Forte contradiction'],
+};
+const STATUS = { MANQUANT: ['b-crit', 'Non identifiée'], EN_ATTENTE: ['b-suivi', 'Résultat attendu'], A_PLANIFIER: ['b-suivi', 'À planifier'], SANS_SUITE: ['b-imp', 'Mentionnée sans suite'] };
+const CAT = { FACTUELLE: 'Contradiction factuelle', TECHNIQUE: 'Déclaration / élément technique', TEMPORELLE: 'Contradiction temporelle', EVOLUTION: 'Évolution de déclaration', SCELLES: 'Traçabilité des scellés' };
+const EVCAT = { TEMOIGNAGE: 'Témoignage', MIS_EN_CAUSE: 'Mis en cause', TECHNIQUE: 'Élément technique', POLICE: 'Police / procédure', MEDICAL: 'Médico-légal' };
+const badge = (k, map = LEVEL) => { const [c, l] = map[k] || ['b-line', k]; return `<span class="badge ${c}">${esc(l)}</span>`; };
+
+// ------------------------------------------------------------------ Sources (traçabilité)
+let SRC = [];
+function srcChip(s, label) {
+  if (!s) return '';
+  SRC.push(s);
+  return `<button class="chip" data-act="src" data-i="${SRC.length - 1}" title="${esc(clip(s.quote || '', 240))}">${icon('doc')}${esc(label || `${s.docId} · p.${s.page || 1}`)}</button>`;
+}
+function srcQuote(s, who) {
+  SRC.push(s);
+  return `<button class="src-q" data-act="src" data-i="${SRC.length - 1}">${who ? `<span class="faint small">${esc(who)}</span><br>` : ''}« ${esc(clip(s.quote, 320))} » <span class="chip">${icon('doc')}${esc(s.docId)} · p.${s.page || 1}</span></button>`;
+}
+const docLabel = (id) => S.data?.documents.find((d) => d.id === id)?.typeLabel ?? id;
+const person = (id) => S.data?.persons.find((p) => p.id === id);
+const pname = (id) => { const p = person(id); return p ? `${p.gender === 'F' ? 'Mme' : p.gender === 'M' ? 'M.' : ''} ${p.name}`.trim() : '—'; };
+const dd = (iso) => (iso ? fmtDate(iso) : '—');
+const daysText = (n) => (n == null ? '' : n < 0 ? `dépassée de ${-n} j` : n === 0 ? "aujourd'hui" : n === 1 ? 'demain' : `dans ${n} jours`);
+
+// ------------------------------------------------------------------ Persistance
+let saveTimer = null;
+function persist() {
+  if (!S.meta) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const files = S.files.map(({ fileId, name, size, kind }) => ({ fileId, name, size, kind }));
+    api.cases.save(S.meta.id, JSON.stringify({ meta: S.meta, files, analysis: S.data, user: S.user }));
+    api.cases.saveMeta({ ...S.meta, counts: S.data ? { docs: S.data.stats.documents, pages: S.data.stats.pages, inc: S.data.contradictions.length, man: S.data.missing.length } : null });
+  }, 250);
+}
+const newUser = () => ({ incStatus: {}, actionsDone: {}, llm: {}, chat: [] });
+
+// ------------------------------------------------------------------ Démarrage
+async function boot() {
+  S.info = await api.info();
+  if (S.info.refDate) S.refDate = S.info.refDate;
+  S.rules = await (await fetch('../rules/cpp_rules.json')).json();
+  S.checklist = await (await fetch('../rules/checklist_homicide.json')).json();
+  try { S.demoCache = await (await fetch('../demo/llm-cache.json')).json(); } catch { S.demoCache = {}; }
+  S.cases = await api.cases.list();
+  refreshLlm();
+  render();
+  if (S.info.autotest) autotest(S.info.autotest);
+}
+
+async function refreshLlm() {
+  S.llm.status = await api.llm.status();
+  const names = (S.llm.status.models || []).map((m) => m.name);
+  if (!S.llm.model || !names.includes(S.llm.model)) S.llm.model = PREFERRED_MODELS.find((m) => names.includes(m)) || names.find((n) => /minis|mistral/i.test(n)) || names[0] || null;
+  renderTop();
+  if (S.view === 'confidentialite' || S.view === 'interroger') render();
+}
+
+// ------------------------------------------------------------------ Navigation
+const NAV = [
+  ['Dossier', [['synthese', 'dash', 'Synthèse'], ['import', 'upload', 'Import des pièces'], ['pieces', 'files', 'Pièces']]],
+  ['Analyse', [['chronologie', 'clock', 'Chronologie'], ['personnes', 'users', 'Personnes'], ['preuves', 'box', 'Preuves et scellés'], ['graphe', 'graph', 'Case Graph']]],
+  ['Contrôle', [['incoherences', 'alert', 'Incohérences'], ['manquants', 'missing', 'Pièces manquantes'], ['echeances', 'calendar', 'Échéances'], ['actions', 'todo', 'Actions']]],
+  ['Assistant', [['interroger', 'chat', 'Interroger le dossier'], ['confidentialite', 'shield', 'Local-first et sécurité']]],
+];
+const TITLES = { home: 'Accueil', import: 'Import des pièces', synthese: 'Synthèse du dossier', pieces: 'Pièces du dossier', chronologie: 'Chronologie', personnes: 'Protagonistes',
+  preuves: 'Preuves et scellés', graphe: 'Case Graph', incoherences: 'Incohérences détectées', manquants: 'Pièces potentiellement manquantes', echeances: 'Échéances et contrôles procéduraux',
+  actions: 'Actions à mener', interroger: 'Interroger le dossier', confidentialite: 'Local-first et sécurité' };
+
+function go(view) { S.view = view; closeSource(); render(); document.getElementById('view').scrollTop = 0; }
+
+function render() {
+  SRC = [];
+  renderSide();
+  renderTop();
+  const v = document.getElementById('view');
+  const fn = VIEWS[S.view] || VIEWS.home;
+  v.innerHTML = fn();
+  AFTER[S.view]?.();
+}
+
+function renderSide() {
+  const d = S.data;
+  const cnt = {
+    incoherences: d ? [d.contradictions.length, d.contradictions.some((c) => c.level === 'FORTE')] : null,
+    manquants: d ? [d.missing.filter((m) => m.status !== 'EN_ATTENTE').length, d.missing.some((m) => m.level === 'CRITIQUE')] : null,
+    echeances: d ? [d.deadlines.filter((x) => ['CRITIQUE', 'DEPASSEE'].includes(x.priority)).length, true] : null,
+    actions: d ? [d.actions.filter((a) => !S.user.actionsDone[a.id]).length, false] : null,
+    pieces: d ? [d.stats.documents, false] : null,
+  };
+  document.getElementById('sidebar').innerHTML = `
+    <div class="brand"><div class="logo">LC</div><div><b>Copilote pénal</b><span>Local Criminal Case Copilot</span></div></div>
+    ${S.meta ? `<div class="case-box"><div class="k">Dossier ouvert</div><div class="v">${esc(S.meta.name)}</div><div class="s">${esc(S.meta.type)} · ${esc(S.meta.juridiction)}${S.meta.ref ? ' · ' + esc(S.meta.ref) : ''}</div></div>` : ''}
+    <nav class="nav">
+      <button class="${S.view === 'home' ? 'on' : ''}" data-act="go" data-v="home">${icon('home')}Accueil</button>
+      ${NAV.map(([g, items]) => `<div class="grp">${g}</div>${items.map(([id, ic, label]) => {
+        const disabled = !S.meta || (!S.data && id !== 'import' && id !== 'confidentialite');
+        const c = cnt[id];
+        return `<button class="${S.view === id ? 'on' : ''}" data-act="go" data-v="${id}" ${disabled ? 'disabled' : ''}>${icon(ic)}${label}${c && c[0] ? `<span class="cnt ${c[1] ? 'crit' : ''}">${c[0]}</span>` : ''}</button>`;
+      }).join('')}`).join('')}
+    </nav>
+    <div class="side-foot"><div class="lock">${icon('lock')}100 % local · chiffré</div><div style="margin-top:4px">Pièces et analyses chiffrées sur ce poste. Aucun envoi réseau.</div></div>`;
+}
+
+function renderTop() {
+  const st = S.llm.status;
+  const llmChip = st?.ok
+    ? `<span class="status-chip" title="LLM exécuté localement par Ollama (${esc(st.url)})"><span class="dot on"></span>Mistral local · ${esc(S.llm.model || 'aucun modèle')}</span>`
+    : `<span class="status-chip" title="${esc(st?.error || '')}"><span class="dot off"></span>LLM local indisponible · mode règles</span>`;
+  document.getElementById('topbar').innerHTML = `
+    <div><div class="crumb">${S.meta ? esc(S.meta.name) : 'Copilote pénal local'}</div><h1>${esc(TITLES[S.view] || '')}</h1></div>
+    <div class="spacer"></div>
+    <span class="status-chip" title="Requêtes réseau sortantes bloquées par la garde réseau">${icon('wifi_off', '').replace('<svg', '<svg width="14" height="14"')} Réseau sortant bloqué</span>
+    ${llmChip}
+    ${S.data ? `<label class="status-chip" title="Date utilisée pour calculer les échéances">${icon('calendar').replace('<svg', '<svg width="14" height="14"')} Date de référence <input type="date" id="refdate" value="${S.refDate}"></label>` : ''}`;
+  const rd = document.getElementById('refdate');
+  if (rd) rd.onchange = () => { S.refDate = rd.value || today(); recomputeDeadlines(); persist(); render(); };
+}
+
+function recomputeDeadlines() {
+  const d = S.data;
+  d.refDate = S.refDate;
+  d.deadlines = evaluateRules(S.rules, { ...d.procedural, cameras: d.cameras, factsDate: d.factsDate }, S.refDate);
+  d.actions = buildActions({ deadlines: d.deadlines, missing: d.missing, contradictions: d.contradictions });
+}
+
+// ------------------------------------------------------------------ Vues
+const VIEWS = {};
+const AFTER = {};
+
+VIEWS.home = () => `
+  <div class="home">
+    <div class="hero">
+      <div class="pitch">
+        <span class="badge" style="background:rgba(255,255,255,.12);color:#cfe0ff">Prototype · Hackathon Sciences Po × Mistral AI</span>
+        <h2 style="margin-top:12px">Copilote local d'analyse de dossiers pénaux</h2>
+        <div>Transforme un dossier documentaire en une représentation structurée et actionnable, sans que les pièces ne quittent ce poste.</div>
+        <div class="flow"><span>Pièces</span><i>→</i><span>Faits</span><i>→</i><span>Chronologie</span><i>→</i><span>Preuves</span><i>→</i><span>Contradictions</span><i>→</i><span>Manques</span><i>→</i><span>Échéances</span><i>→</i><span>Actions</span></div>
+        <div class="principles">
+          <div><b>100 % local</b>Pièces chiffrées sur ce poste ; LLM Mistral exécuté localement ; réseau sortant bloqué.</div>
+          <div><b>Toujours sourcé</b>Chaque alerte renvoie à la pièce, à la page et au passage exacts.</div>
+          <div><b>Décision humaine</b>Le système signale et priorise ; il ne conclut jamais.</div>
+        </div>
+      </div>
+      <div class="card pad">
+        <h3>Nouveau dossier</h3>
+        <div class="form-row"><label>Nom du dossier</label><input id="f-name" value="Affaire Martin / Dubois"></div>
+        <div class="grid g2" style="gap:10px">
+          <div class="form-row"><label>Type</label><select id="f-type"><option>Homicide</option><option>Violences volontaires</option><option>Vol aggravé</option><option>Stupéfiants</option></select></div>
+          <div class="form-row"><label>Juridiction</label><select id="f-jur"><option>France · pénal</option></select></div>
+        </div>
+        <div class="form-row"><label>Référence (facultatif)</label><input id="f-ref" value="JI 26/00147"></div>
+        <button class="btn primary" data-act="create-case">${icon('plus')}Créer le dossier</button>
+        <div class="faint small" style="margin-top:10px">La checklist « homicide » et le jeu de règles procédurales de démonstration sont chargés pour ce type de dossier.</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:18px">
+      <div class="pad" style="padding:14px 16px 4px"><h3>Dossiers enregistrés sur ce poste</h3></div>
+      <div class="case-list">
+        ${S.cases.length ? S.cases.map((c) => `
+          <div class="case-item"><div class="ic">${icon('folder')}</div>
+            <div style="flex:1"><b>${esc(c.name)}</b><div class="faint small">${esc(c.type)} · ${esc(c.juridiction)} · modifié le ${dd(c.updatedAt?.slice(0, 10))}${c.counts ? ` · ${c.counts.docs} pièces, ${c.counts.inc} incohérences` : ''}</div></div>
+            <button class="btn sm" data-act="open-case" data-id="${c.id}">Ouvrir</button>
+            <button class="btn sm ghost" data-act="del-case" data-id="${c.id}" title="Supprimer définitivement">${icon('trash')}</button>
+          </div>`).join('') : '<div class="empty">Aucun dossier pour l\'instant.</div>'}
+      </div>
+    </div>
+  </div>`;
+
+VIEWS.import = () => {
+  const p = S.ui.progress;
+  const total = S.files.length;
+  return `<div class="page">
+    <div class="page-head"><div><h2>Import des pièces</h2><p>Déposez les pièces du dossier : PDF (y compris un dossier complet scanné et coté), texte ou images. Les fichiers sont copiés chiffrés sur ce poste ; rien n'est envoyé.</p></div></div>
+    <div class="grid" style="grid-template-columns: 1.35fr 1fr; align-items:start">
+      <div>
+        <div class="drop" id="drop">
+          ${icon('upload')}
+          <h3>Glissez ici les pièces ou un dossier</h3>
+          <div class="muted">PDF, TXT, MD, PNG, JPG · les PDF reliés sont découpés par cote</div>
+          <div style="margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+            <button class="btn" data-act="pick" data-folder="0">${icon('files')}Ajouter des fichiers</button>
+            <button class="btn" data-act="pick" data-folder="1">${icon('folder')}Sélectionner un dossier</button>
+            ${S.info?.demoDir ? `<button class="btn" data-act="demo">${icon('play')}Dossier de démonstration</button>` : ''}
+          </div>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <div style="display:flex;align-items:center;padding:12px 16px"><div><span class="bigcount num">${total}</span> <span class="muted">document${total > 1 ? 's' : ''} importé${total > 1 ? 's' : ''}</span></div>
+            ${total ? `<button class="btn sm ghost" style="margin-left:auto" data-act="clear-files">Vider la liste</button>` : ''}</div>
+          ${total ? `<div style="max-height:340px;overflow:auto"><table class="t"><thead><tr><th>Fichier</th><th>Format</th><th>Taille</th></tr></thead><tbody>
+            ${S.files.map((f) => `<tr><td>${esc(f.name)}</td><td><span class="tag">${f.kind.toUpperCase()}</span></td><td class="num">${(f.size / 1024).toFixed(0)} Ko</td></tr>`).join('')}
+          </tbody></table></div>` : ''}
+        </div>
+      </div>
+      <div class="card pad">
+        <h3>Analyse locale</h3>
+        <div class="muted small" style="margin-bottom:8px">Pipeline exécuté sur ce poste : extraction pdf.js, règles déterministes auditables, index local. Le LLM Mistral local intervient ensuite à la demande (explications, questions).</div>
+        <ul class="steps">${STEPS.map(([id, label]) => {
+          const st = p[id];
+          return `<li class="${st?.status || ''}"><span class="st">${st?.status === 'done' ? icon('check') : ''}</span>${label}${st?.detail && st.status === 'running' ? `<span class="faint small"> · ${esc(clip(st.detail, 34))}</span>` : ''}<span class="ms num">${st?.ms != null ? st.ms + ' ms' : ''}</span></li>`;
+        }).join('')}</ul>
+        <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+          <button class="btn primary" data-act="analyze" ${!total || S.ui.analyzing ? 'disabled' : ''}>${S.ui.analyzing ? '<span class="spinner"></span> Analyse en cours…' : icon('play') + (S.data ? "Relancer l'analyse" : "Lancer l'analyse locale")}</button>
+          ${S.data && !S.ui.analyzing ? `<button class="btn" data-act="go" data-v="synthese">Voir la synthèse ${icon('right')}</button>` : ''}
+        </div>
+        ${S.data ? `<div class="note" style="margin-top:14px">${icon('check')}<div><b>${S.data.stats.documents} pièces</b> classées (${S.data.stats.pages} pages) en <b>${(S.data.stats.ms / 1000).toFixed(1)} s</b>, sans réseau : ${S.data.contradictions.length} incohérences, ${S.data.missing.length} pièces ou actes à vérifier, ${S.data.deadlines.filter((x) => x.priority === 'CRITIQUE').length} échéances critiques.</div></div>` : ''}
+      </div>
+    </div>
+  </div>`;
+};
+
+AFTER.import = () => {
+  const drop = document.getElementById('drop');
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = async (e) => {
+    e.preventDefault(); drop.classList.remove('over');
+    const out = [];
+    const items = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
+    const walk = async (entry) => {
+      if (entry.isFile) { const f = await new Promise((r) => entry.file(r)); out.push(f); }
+      else if (entry.isDirectory) { const rd = entry.createReader(); const ents = await new Promise((r) => rd.readEntries(r)); for (const x of ents) await walk(x); }
+    };
+    if (items.length) for (const it of items) await walk(it); else out.push(...e.dataTransfer.files);
+    const conv = [];
+    for (const f of out) {
+      const kind = /\.pdf$/i.test(f.name) ? 'pdf' : /\.(txt|md)$/i.test(f.name) ? 'text' : /\.(png|jpe?g|webp)$/i.test(f.name) ? 'image' : null;
+      if (!kind) continue;
+      conv.push({ name: f.name, size: f.size, kind, data: kind === 'text' ? null : new Uint8Array(await f.arrayBuffer()), text: kind === 'text' ? await f.text() : null });
+    }
+    addFiles(conv);
+  };
+};
+
+function addFiles(list) {
+  let n = S.files.length;
+  for (const f of list) {
+    if (S.files.some((x) => x.name === f.name && x.size === f.size)) continue;
+    S.files.push({ ...f, fileId: `F${String(++n).padStart(3, '0')}`, fresh: true });
+  }
+  toast(`${list.length} fichier(s) ajouté(s)`);
+  render();
+}
+
+async function runAnalysis() {
+  S.ui.analyzing = true; S.ui.progress = {}; render();
+  try {
+    for (const f of S.files) {
+      if (f.fresh) { await api.cases.putFile(S.meta.id, f.fileId, f.kind === 'text' ? new TextEncoder().encode(f.text) : f.data); f.fresh = false; }
+      if (!f.data && f.kind !== 'text') f.data = await api.cases.getFile(S.meta.id, f.fileId);
+      if (f.kind === 'text' && f.text == null) f.text = new TextDecoder().decode(await api.cases.getFile(S.meta.id, f.fileId));
+    }
+    const llmClassify = S.llm.status?.ok && S.llm.model ? async (doc, types) => {
+      const p = classifyPrompt(doc, types);
+      const r = await llmCall({ messages: p.messages, format: p.format });
+      const j = parseJson(r.content);
+      return j ? { type: j.type, confidence: j.confiance } : null;
+    } : null;
+    const res = await analyzeCase({
+      files: S.files.map((f) => ({ fileId: f.fileId, name: f.name, kind: f.kind, data: f.data, text: f.text })),
+      pdfjs: pdfjsLib, docOptions: { standardFontDataUrl: './vendor/pdfjs/standard_fonts/' }, rules: S.rules, checklist: S.checklist, refDate: S.refDate, llmClassify,
+      onProgress: (p) => { S.ui.progress[p.step] = { ...(S.ui.progress[p.step] || {}), ...p }; if (S.view === 'import') render(); },
+    });
+    S.data = res;
+    S.bm25 = null;
+    clearViewerCache();
+    for (const f of S.files) { f.data = null; }
+    persist();
+  } catch (e) {
+    console.error(e);
+    toast(`Erreur d'analyse : ${e.message}`);
+  }
+  S.ui.analyzing = false;
+  render();
+}
+
+// ---------------- Synthèse
+VIEWS.synthese = () => {
+  const d = S.data;
+  const strong = d.contradictions.filter((c) => c.level === 'FORTE').length;
+  const crit = d.deadlines.filter((x) => ['CRITIQUE', 'DEPASSEE'].includes(x.priority) && x.kind !== 'CONTROLE');
+  const next = d.deadlines.filter((x) => x.dueDate && x.daysLeft >= 0).sort((a, b) => a.daysLeft - b.daysLeft)[0];
+  const key = d.persons.filter((p) => ['VICTIME', 'MIS_EN_CAUSE', 'TEMOIN'].includes(p.role));
+  const open = d.actions.filter((a) => !S.user.actionsDone[a.id]);
+  const kpi = (ic, k, v, s, cls = '') => `<div class="card kpi ${cls}"><div class="k">${icon(ic)}${k}</div><div class="v num">${v}</div><div class="s">${s}</div></div>`;
+  return `<div class="page">
+    <div class="page-head"><div><h2>${esc(S.meta.name)}</h2><p>Faits du ${dd(d.factsDate)} · ${d.stats.documents} pièces, ${d.stats.pages} pages analysées localement en ${(d.stats.ms / 1000).toFixed(1)} s · date de référence ${dd(S.refDate)}</p></div></div>
+    <div class="grid g4">
+      ${kpi('files', 'Pièces classées', d.stats.documents, `${d.stats.pages} pages · ${d.stats.phoneRows} lignes de fadettes`)}
+      ${kpi('users', 'Protagonistes', key.length, `${key.filter((p) => p.role === 'TEMOIN').length} témoins · ${d.persons.length} personnes citées`)}
+      ${kpi('alert', 'Incohérences', d.contradictions.length, `${strong} fortes · ${d.contradictions.length - strong} à vérifier`, strong ? 'crit' : '')}
+      ${kpi('missing', 'Pièces ou actes à vérifier', d.missing.filter((m) => m.status !== 'EN_ATTENTE').length, `${d.missing.filter((m) => m.level === 'CRITIQUE').length} critiques · ${d.missing.filter((m) => m.status === 'EN_ATTENTE').length} en attente`, d.missing.some((m) => m.level === 'CRITIQUE') ? 'crit' : '')}
+      ${kpi('calendar', 'Échéances critiques', crit.length, next ? `prochaine ${daysText(next.daysLeft)} (${dd(next.dueDate)})` : '—', crit.length ? 'crit' : '')}
+      ${kpi('clock', 'Événements datés', d.timeline.facts.filter((e) => e.importance === 'key').length, `${d.timeline.facts.length} au total · ${d.timeline.procedure.length} actes`)}
+      ${kpi('todo', 'Actions ouvertes', open.length, `${open.filter((a) => a.priority === 'CRITIQUE').length} critiques`)}
+      ${kpi('lock', 'Données envoyées', '0', 'octet hors du poste')}
+    </div>
+    <div class="grid" style="grid-template-columns:1.45fr 1fr;margin-top:14px;align-items:start">
+      <div class="card pad"><h3>Priorités</h3>
+        ${open.slice(0, 7).map((a) => `<div class="prio-item">${badge(a.priority)}<div style="flex:1"><div style="font-weight:600">${esc(a.label)}</div><div class="faint small">${esc(clip(a.why, 170))}</div><div>${(a.sources || []).slice(0, 3).map((s) => srcChip(s)).join('')}</div></div></div>`).join('')}
+        <button class="btn sm ghost" data-act="go" data-v="actions">Toutes les actions ${icon('right')}</button>
+      </div>
+      <div>
+        <div class="card pad"><h3>Échéances</h3>
+          ${d.deadlines.filter((x) => x.kind !== 'CONTROLE').slice(0, 4).map((x) => `<div class="prio-item">${badge(x.priority)}<div style="flex:1"><div style="font-weight:600">${esc(x.label)}</div><div class="small"><b>${dd(x.dueDate)}</b> · ${daysText(x.daysLeft)} ${x.ruleId ? `<span class="chip rule">${esc(x.ruleId)}</span>` : '<span class="tag">date extraite</span>'}</div></div></div>`).join('')}
+          <button class="btn sm ghost" data-act="go" data-v="echeances">Moteur d'échéances ${icon('right')}</button>
+        </div>
+        <div class="card pad" style="margin-top:14px"><h3>Comment ces résultats sont produits</h3>
+          <ul class="method">
+            <li><b>Extraction et classification</b> : pdf.js et règles pondérées, sur ce poste.</li>
+            <li><b>Faits structurés</b> : déclarations, horaires, scellés, fadettes, actes, chacun relié à sa pièce et sa page.</li>
+            <li><b>Détection</b> : règles déterministes et auditables (contradictions, références croisées, checklist).</li>
+            <li><b>Échéances</b> : moteur de règles CPP (art. 63, 82-1, 145-2, 148, 801), calcul affiché.</li>
+            <li><b>Mistral local</b> : explications neutres et réponses citées, filtrées par des garde-fous.</li>
+          </ul>
+          <div class="human">${icon('human')}Aucune conclusion sur la culpabilité : vérification humaine systématique.</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+};
+
+// ---------------- Pièces
+VIEWS.pieces = () => {
+  const d = S.data;
+  const fams = [...new Set(d.documents.map((x) => x.family))];
+  const f = S.ui.famFilter || 'Toutes';
+  const rows = d.documents.filter((x) => f === 'Toutes' || x.family === f);
+  return `<div class="page">
+    <div class="page-head"><div><h2>Pièces du dossier</h2><p>Classification automatique par le contenu (et non par le nom de fichier). Cliquez une pièce pour l'ouvrir.</p></div></div>
+    <div class="tabs" style="margin-bottom:12px">${['Toutes', ...fams].map((x) => `<button class="${x === f ? 'on' : ''}" data-act="fam" data-f="${esc(x)}">${esc(x)}</button>`).join('')}</div>
+    <div class="card"><table class="t"><thead><tr><th>Cote</th><th>Type détecté</th><th>Famille</th><th>Date</th><th>Pages</th><th>Confiance</th><th>Méthode</th><th>Fichier source</th></tr></thead><tbody>
+      ${rows.map((x) => { SRC.push({ docId: x.id, page: 1, quote: '' }); return `<tr class="click" data-act="src" data-i="${SRC.length - 1}"><td><b>${esc(x.id)}</b></td><td>${esc(x.typeLabel)}</td><td><span class="tag">${esc(x.family)}</span></td><td class="num">${dd(x.date)}</td><td class="num">${x.pageCount}</td><td><span class="conf"><i style="width:${Math.round(x.confidence * 100)}%;background:${x.confidence > 0.8 ? 'var(--ok)' : 'var(--imp)'}"></i></span><span class="num small">${Math.round(x.confidence * 100)} %</span></td><td class="small muted">${esc(x.method)}</td><td class="small muted">${esc(clip(x.fileName, 46))}</td></tr>`; }).join('')}
+    </tbody></table></div>
+  </div>`;
+};
+
+// ---------------- Chronologie
+VIEWS.chronologie = () => {
+  const d = S.data;
+  const tab = S.ui.tlTab;
+  const win = d.timeline.facts.find((e) => e.kind === 'DEATH_WINDOW');
+  const evs = d.timeline.facts.filter((e) => e.kind !== 'DEATH_WINDOW' && (S.ui.tlAll || e.importance === 'key'));
+  let lastDate = null, bannerDone = false;
+  const rows = evs.map((e) => {
+    let pre = '';
+    if (e.date !== lastDate) { pre += `<div style="margin:12px 0 4px 134px" class="faint small"><b>${dayName(e.date)} ${dd(e.date)}</b></div>`; lastDate = e.date; }
+    const inWin = win && e.date === win.date && e.minutes >= win.minutes && e.minutes <= win.end;
+    if (inWin && !bannerDone) { pre += `<div class="window-banner">${icon('alert').replace('<svg', '<svg width="14" height="14"')} Fenêtre estimée du décès : ${win.timeLabel} ${srcChip(win.sources[0], 'D13')}</div>`; bannerDone = true; }
+    return `${pre}<div class="tl-row cat-${e.category} ${e.flags.length ? 'flag' : ''} ${inWin ? 'window' : ''}">
+      <div class="time">${esc(e.timeLabel)}${e.approx ? '<small>approximatif</small>' : ''}</div>
+      <div class="rail"><span class="dot"></span></div>
+      <div class="body"><div class="ev"><div class="lbl">${esc(e.label)}</div>
+        <div class="meta"><span class="tag">${EVCAT[e.category] || ''}</span>${e.sources.map((s) => srcChip(s, `${s.docId}${s.minutes != null && e.sources.length > 1 ? ' · ' + fmtTime(s.minutes) : ''}`)).join('')}
+        ${e.flags.map((f) => `<button class="chip rule" data-act="goinc" data-id="${f}">${icon('alert')}${f}</button>`).join('')}</div></div></div>
+    </div>`;
+  }).join('');
+  const proc = d.timeline.procedure.map((e) => `<div class="proc-row"><div><b class="num">${dd(e.date)}</b>${e.timeLabel ? `<div class="faint small num">${e.timeLabel}</div>` : ''}</div><div><div style="font-weight:600">${esc(e.label)}${e.kind === 'ACTE' ? ' <span class="tag">acte</span>' : ''}</div>${e.detail ? `<div class="faint small">${esc(e.detail)}</div>` : ''}<div>${e.sources.map((s) => srcChip(s)).join('')}</div></div></div>`).join('');
+  return `<div class="page">
+    <div class="page-head"><div><h2>Chronologie</h2><p>Chaque événement est relié à ses sources ; quand plusieurs pièces décrivent le même fait, leurs horaires respectifs sont conservés.</p></div>
+      <div class="actions"><div class="tabs"><button class="${tab === 'faits' ? 'on' : ''}" data-act="tltab" data-t="faits">Faits (${dd(d.factsDate)})</button><button class="${tab === 'proc' ? 'on' : ''}" data-act="tltab" data-t="proc">Procédure</button></div></div></div>
+    ${tab === 'faits' ? `
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:10px">
+        <div class="legend">${Object.entries(EVCAT).map(([k, v]) => `<span><i style="background:var(--c-${{ TEMOIGNAGE: 'temoin', MIS_EN_CAUSE: 'mec', TECHNIQUE: 'tech', POLICE: 'police', MEDICAL: 'med' }[k]})"></i>${v}</span>`).join('')}</div>
+        <label class="toggle" style="margin-left:auto"><input type="checkbox" data-act="tlall" ${S.ui.tlAll ? 'checked' : ''}> Afficher tous les événements (${d.timeline.facts.length})</label>
+      </div>
+      <div class="tl">${rows}</div>` : `<div class="card pad">${proc}</div>`}
+  </div>`;
+};
+
+// ---------------- Personnes
+VIEWS.personnes = () => {
+  const d = S.data;
+  const victim = d.persons.find((p) => p.role === 'VICTIME');
+  const mec = d.persons.filter((p) => p.role === 'MIS_EN_CAUSE');
+  const tem = d.persons.filter((p) => p.role === 'TEMOIN');
+  const others = d.persons.filter((p) => !['VICTIME', 'MIS_EN_CAUSE', 'TEMOIN'].includes(p.role));
+  const av = (p, color) => `<div class="avatar" style="background:${color}">${esc((p.first?.[0] || '') + p.last[0])}</div>`;
+  const claimsOf = (id, kinds) => d.statements.filter((s) => s.speakerId === id && kinds.includes(s.kind));
+  const lastContact = d.timeline.facts.find((e) => e.kind === 'LAST_CONTACT');
+  const win = d.timeline.facts.find((e) => e.kind === 'DEATH_WINDOW');
+  const CL = { AT_HOME: 'Présence au domicile', NO_PHONE: 'Usage du téléphone', NOT_AT_PLACE: 'Chez la victime', SLEEPING: 'Sommeil', MESSAGE_SENT: 'Message envoyé', HEARD: 'A entendu', SEEN: 'A vu', VOICE_ID: 'Reconnaissance de voix', VOICE_UNKNOWN: 'Voix non identifiée', CALLED_VICTIM: 'Appel à la victime' };
+  const claimList = (list) => list.map((s) => `<div class="claim"><span class="tag">${CL[s.kind] || s.kind}</span>${s.at ? `<b class="num">${s.at.approx ? 'vers ' : ''}${fmtTime(s.at.minutes)}</b> ` : ''}${s.hedged ? '<span class="badge b-verif">hésitation</span> ' : ''}« ${esc(clip(s.quote, 200))} » ${srcChip(s)}</div>`).join('');
+  return `<div class="page">
+    <div class="page-head"><div><h2>Protagonistes</h2><p>Rôles déduits des pièces (qualité d'audition, mentions procédurales). Les déclarations sont citées telles quelles, avec leur source.</p></div></div>
+    <div class="grid" style="grid-template-columns:1fr 1.5fr;align-items:start">
+      ${victim ? `<div class="card person"><div class="top">${av(victim, 'var(--c-med)')}<div><h3>${esc(victim.name)}</h3><div class="faint small">Victime${d.victim?.birth ? ` · né le ${esc(d.victim.birth.date)}` : ''} · citée dans ${victim.docs.length} pièces</div></div></div>
+        ${lastContact ? `<div class="sec"><h4>Dernier contact connu</h4><div class="claim"><b class="num">${esc(lastContact.timeLabel)}</b> ${esc(lastContact.label)} ${lastContact.sources.map((s) => srcChip(s)).join('')}</div></div>` : ''}
+        ${win ? `<div class="sec"><h4>Fenêtre estimée du décès</h4><div class="claim"><b class="num">${esc(win.timeLabel)}</b> ${srcChip(win.sources[0])}</div></div>` : ''}
+        ${d.victim?.cause ? `<div class="sec"><h4>Cause du décès (rapport médico-légal)</h4>${srcQuote(d.victim.cause)}</div>` : ''}
+      </div>` : '<div></div>'}
+      ${mec.map((p) => {
+        const tension = d.contradictions.filter((c) => c.subjectId === p.id);
+        return `<div class="card person"><div class="top">${av(p, 'var(--c-mec)')}<div><h3>${esc(p.name)}</h3><div class="faint small">Mis en cause (mis en examen) · cité dans ${p.docs.length} pièces</div></div></div>
+          <div class="sec"><h4>Déclarations principales</h4>${claimList(claimsOf(p.id, ['AT_HOME', 'NO_PHONE', 'NOT_AT_PLACE', 'MESSAGE_SENT']))}</div>
+          <div class="sec"><h4>Éléments en tension avec sa version</h4>${tension.map((c) => `<div class="claim">${badge(c.level)} <a href="#" data-act="goinc" data-id="${c.id}">${esc(c.id)} · ${esc(c.title)}</a></div>`).join('') || '<div class="faint small">Aucun</div>'}</div>
+          <div class="sec"><h4>Résultats négatifs ou non concluants (à apprécier à charge et à décharge)</h4>${d.neutral.slice(0, 6).map((n) => `<div class="claim">« ${esc(clip(n.quote, 170))} » ${srcChip(n)}</div>`).join('')}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <h3 style="margin:22px 0 10px">Témoins</h3>
+    <div class="grid g3" style="align-items:start">
+      ${tem.map((p) => {
+        const inc = d.contradictions.filter((c) => c.key === `evolution-${p.id}` || c.sides.some((s) => s.items.some((i) => d.statements.some((st) => st.speakerId === p.id && st.docId === i.docId && st.quote === i.quote))));
+        return `<div class="card person"><div class="top">${av(p, 'var(--c-temoin)')}<div><h3>${esc(p.name)}</h3><div class="faint small">Témoin · ${p.docs.map((x) => x).slice(0, 6).join(', ')}</div></div></div>
+          ${claimList(claimsOf(p.id, ['HEARD', 'SEEN', 'VOICE_ID', 'VOICE_UNKNOWN', 'CALLED_VICTIM']).filter((s) => s.at || s.kind.startsWith('VOICE'))) || '<div class="faint small">Aucune déclaration horodatée.</div>'}
+          ${inc.length ? `<div class="sec"><h4>Points à vérifier</h4>${inc.map((c) => `<div class="claim">${badge(c.level)} <a href="#" data-act="goinc" data-id="${c.id}">${esc(c.id)} · ${esc(c.title)}</a></div>`).join('')}</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+    <h3 style="margin:22px 0 10px">Autres personnes citées</h3>
+    <div class="card"><table class="t"><thead><tr><th>Personne</th><th>Qualité déduite</th><th>Mentions</th><th>Pièces</th></tr></thead><tbody>
+      ${others.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td>${esc(ROLE_LABEL[p.role] || p.role)}</td><td class="num">${p.mentionCount}</td><td>${p.docs.slice(0, 8).map((x) => srcChip({ docId: x, page: (p.mentions.find((m) => m.docId === x) || {}).page || 1, quote: (p.mentions.find((m) => m.docId === x) || {}).quote || '' }, x)).join('')}</td></tr>`).join('')}
+    </tbody></table></div>
+  </div>`;
+};
+
+// ---------------- Preuves
+VIEWS.preuves = () => {
+  const d = S.data;
+  const st = (ok, label) => `<span class="badge ${ok === true ? 'b-ok' : ok === false ? 'b-crit' : 'b-suivi'}">${esc(label)}</span>`;
+  const cams = d.cameras.map((c) => `<div class="ev-item"><div><b>${esc(c.label)}</b><div class="status-line">${c.exploited ? st(true, 'Images exploitées') : st(false, 'Aucune exploitation')} ${c.requested ? st(true, 'Réquisition') : c.exploited ? '' : st(false, 'Aucune réquisition')} ${c.retention ? st(null, `Conservation déclarée : ${c.retention.raw}`) : ''}</div><div style="margin-top:4px">${c.mentions.slice(0, 4).map((m) => srcChip(m)).join('')}</div></div></div>`).join('');
+  const ph = d.phone[0];
+  const ext = d.missing.find((m) => m.kind === 'EXTRACTION_TEL');
+  return `<div class="page">
+    <div class="page-head"><div><h2>Preuves et scellés</h2><p>Statut de chaque objet saisi : où il a été saisi, quelles analyses ont été demandées, lesquelles figurent au dossier, et les éventuelles incohérences de traçabilité.</p></div></div>
+    <div class="grid" style="grid-template-columns:1.5fr 1fr;align-items:start">
+      <div class="card"><div class="pad" style="padding-bottom:4px"><h3>Objets placés sous scellés</h3></div>
+        ${d.evidence.map((e) => `<div class="ev-item"><div>
+          <b>${esc(e.label)}</b> ${e.numbers.map((n) => `<span class="tag">Scellé ${/^\d+$/.test(n) ? 'n°' + n : n}</span>`).join('')} ${e.conflicts.map((c) => `<button class="chip rule" data-act="goinc" data-id="${c}">${icon('alert')}${c} numérotation</button>`).join('')}
+          <div class="small muted" style="margin-top:3px">Saisi : ${srcChip(e.seizedIn, `${e.seizedIn.docId} · ${docLabel(e.seizedIn.docId)}`)} ${e.transmitted ? `· transmis : ${srcChip(e.transmitted)}` : ''}</div>
+          <div class="status-line">
+            ${e.analyses.map((a) => `${st(true, 'Analyse disponible')} <span class="small">${esc(docLabel(a.docId))} ${srcChip({ docId: a.docId, page: a.page, quote: a.result || '' })}${a.result ? ` : « ${esc(clip(a.result, 120))} »` : ''}</span>`).join('<br>')}
+            ${e.pending.map((p) => `${p.status === 'EN_ATTENTE' ? st(null, `${p.label} : attendu avant le ${dd(p.deadline)}`) : st(false, `${p.label} : non identifié`)}`).join(' ')}
+            ${!e.analyses.length && !e.pending.length ? st(null, 'Aucune analyse identifiée') : ''}
+          </div></div></div>`).join('')}
+      </div>
+      <div>
+        <div class="card"><div class="pad" style="padding-bottom:4px"><h3>Vidéoprotection</h3></div>${cams}</div>
+        <div class="card" style="margin-top:14px"><div class="pad" style="padding-bottom:4px"><h3>Téléphonie</h3></div>
+          ${ph ? `<div class="ev-item"><div><b>Ligne ${esc(ph.owner?.number || '')}</b> <span class="faint small">titulaire : ${esc(ph.owner?.name || '?')}</span>
+            <div class="status-line">${st(true, `Fadettes : ${ph.totalRows} lignes`)} ${ext ? st(false, "Extraction du terminal : rapport non identifié") : st(true, 'Extraction disponible')}</div>
+            <div style="margin-top:4px">${srcChip({ docId: ph.docId, page: 1, quote: '' }, `${ph.docId} · relevé opérateur`)} ${ext ? ext.sources.slice(0, 2).map((s) => srcChip(s)).join('') : ''}</div></div></div>` : '<div class="empty">Aucun relevé</div>'}
+        </div>
+        <div class="card" style="margin-top:14px"><div class="pad" style="padding-bottom:4px"><h3>Expertises attendues et retrouvées</h3></div>
+          ${d.matched.map((m) => `<div class="ev-item"><div><b>${esc(m.label)}</b><div class="status-line">${st(true, 'Retrouvée')} <span class="small">demandée dans ${m.requestedIn.join(', ') || '—'} → versée en ${m.foundIn.join(', ')}</span></div></div></div>`).join('')}
+          ${d.missing.filter((m) => !['CAMERA', 'BIENS'].includes(m.kind)).map((m) => `<div class="ev-item"><div><b>${esc(m.label)}</b><div class="status-line">${badge(m.status, STATUS)} <span class="small">${m.sources.slice(0, 3).map((s) => srcChip(s)).join('')}</span></div></div></div>`).join('')}
+        </div>
+      </div>
+    </div>
+  </div>`;
+};
+
+// ---------------- Incohérences
+VIEWS.incoherences = () => {
+  const d = S.data;
+  const f = S.ui.incFilter;
+  const list = d.contradictions.filter((c) => f === 'all' || c.level === f);
+  return `<div class="page">
+    <div class="page-head"><div><h2>Incohérences détectées</h2><p>Le système signale des affirmations qui semblent incompatibles et les source. Il ne détermine jamais quelle version est exacte et ne se prononce pas sur la sincérité des personnes.</p></div>
+      <div class="actions"><div class="tabs">${[['all', 'Toutes'], ['FORTE', 'Fortes'], ['A_VERIFIER', 'À vérifier']].map(([k, l]) => `<button class="${f === k ? 'on' : ''}" data-act="incf" data-f="${k}">${l} (${k === 'all' ? d.contradictions.length : d.contradictions.filter((c) => c.level === k).length})</button>`).join('')}</div></div></div>
+    ${list.map((c) => {
+      const stt = S.user.incStatus[c.id] || 'OUVERTE';
+      const llm = S.ui['llm-' + c.id];
+      return `<div class="card finding" id="${c.id}">
+        <div class="head">${badge(c.level)}<span class="tag">${CAT[c.category] || c.category}</span><span class="faint small">${c.id}</span></div>
+        <h3>${esc(c.title)}</h3>
+        <div class="summary">${esc(c.summary)}</div>
+        <div class="sides ${c.sides.length > 2 ? 'three' : ''}">${c.sides.map((s) => `<div class="side"><h4>${s.role === 'MIS_EN_CAUSE' ? icon('human').replace('<svg', '<svg width="14" height="14"') : s.role === 'TECHNIQUE' ? icon('cpu').replace('<svg', '<svg width="14" height="14"') : icon('doc').replace('<svg', '<svg width="14" height="14"')}${esc(s.label)}</h4>${s.items.slice(0, 4).map((i) => srcQuote(i, docLabel(i.docId))).join('')}</div>`).join('')}</div>
+        ${c.notes?.length ? `<ul class="notes">${c.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+        ${c.context?.length ? `<div style="margin-top:6px">${c.context.map((x) => `<span class="small muted">${esc(x.label)} :</span> ${srcChip(x)}`).join(' ')}</div>` : ''}
+        ${llm ? renderLlmBox(llm) : ''}
+        <div class="foot-row">
+          <div class="human">${icon('human')}Ces éléments nécessitent une vérification humaine.</div>
+          <span class="spacer"></span>
+          <button class="btn sm" data-act="explain" data-id="${c.id}" ${S.llm.busy[c.id] ? 'disabled' : ''}>${S.llm.busy[c.id] ? '<span class="spinner"></span> Mistral réfléchit…' : icon('spark') + 'Lecture Mistral (locale)'}</button>
+          <div class="seg">${[['OUVERTE', 'À vérifier'], ['VERIFIEE', 'Vérifiée'], ['ECARTEE', 'Écartée']].map(([k, l]) => `<button class="${stt === k ? 'on' : ''}" data-act="incstat" data-id="${c.id}" data-s="${k}">${l}</button>`).join('')}</div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+};
+
+function renderLlmBox(r) {
+  if (r.error) return `<div class="llm-box"><h5>${icon('spark').replace('<svg', '<svg width="13" height="13"')}Mistral local</h5><div class="muted">${esc(r.error)}</div></div>`;
+  const j = r.json || {};
+  const cite = (t) => linkCitations(esc(guard(String(t || '')).text));
+  return `<div class="llm-box"><h5>${icon('spark').replace('<svg', '<svg width="13" height="13"')}Lecture neutre · ${esc(r.model)}${r.cached ? ' · résultat en cache local' : ` · ${(r.ms / 1000).toFixed(1)} s`}</h5>
+    <div>${cite(j.lecture_neutre)}</div>
+    ${j.hypotheses_de_compatibilite?.length ? `<div style="margin-top:6px"><b class="small">Hypothèses de compatibilité</b><ul>${j.hypotheses_de_compatibilite.map((h) => `<li>${cite(h)}</li>`).join('')}</ul></div>` : ''}
+    ${j.verifications?.length ? `<div><b class="small">Vérifications proposées</b><ul>${j.verifications.map((h) => `<li>${cite(h)}</li>`).join('')}</ul></div>` : ''}
+    ${r.flagged?.length ? `<div class="faint small">Garde-fou : ${r.flagged.length} formulation(s) retirée(s).</div>` : ''}
+    <div class="faint small">Texte généré localement, sans valeur de constat : seuls les extraits cités font foi.</div></div>`;
+}
+
+function linkCitations(html) {
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').replace(/^\s*[-*]\s+/gm, '• ').replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<i>$2</i>');
+  return html.replace(/\[([A-Z]{1,2}\d{1,3}(?:bis)?)\s*(?:p\.?\s*(\d+))?\]/g, (m, id, pg) => {
+    if (!S.data.documents.some((d) => d.id === id)) return `<span class="badge b-crit" title="Référence inexistante">${esc(m)}</span>`;
+    SRC.push({ docId: id, page: pg ? +pg : 1, quote: '' });
+    return `<button class="chip" data-act="src" data-i="${SRC.length - 1}">${id}${pg ? ' · p.' + pg : ''}</button>`;
+  });
+}
+
+async function explain(id) {
+  const c = S.data.contradictions.find((x) => x.id === id);
+  S.llm.busy[id] = true; render();
+  try {
+    const r = await llmCall({ messages: explainPrompt(c), format: EXPLAIN_SCHEMA });
+    const json = parseJson(r.content) || { lecture_neutre: r.content };
+    const flagged = [json.lecture_neutre, ...(json.hypotheses_de_compatibilite || []), ...(json.verifications || [])].flatMap((t) => guard(String(t || '')).flagged);
+    S.ui['llm-' + id] = { ...r, json, flagged };
+  } catch (e) {
+    S.ui['llm-' + id] = { error: `Mistral local indisponible (${e.message}). Les détections ci-dessus restent valables : elles sont produites par les règles.` };
+  }
+  S.llm.busy[id] = false;
+  render();
+}
+
+// ---------------- Pièces manquantes
+VIEWS.manquants = () => {
+  const d = S.data;
+  const BASIS = { 'RÉFÉRENCE CROISÉE': 'Une pièce annonce cet acte', CHECKLIST: 'Checklist homicide', 'MENTION ISOLÉE': 'Mentionné dans une seule pièce' };
+  return `<div class="page">
+    <div class="page-head"><div><h2>Pièces potentiellement manquantes</h2><p>Deux mécanismes combinés : (1) une pièce annonce un acte, une transmission ou une expertise dont le résultat n'est pas au dossier ; (2) comparaison avec une checklist « homicide ». S'y ajoutent les éléments mentionnés une seule fois et restés sans suite.</p></div></div>
+    ${d.missing.map((m) => `<div class="card finding">
+      <div class="head">${badge(m.level)}${badge(m.status, STATUS)}${m.basis.map((b) => `<span class="tag" title="${esc(BASIS[b] || '')}">${esc(b)}</span>`).join('')}<span class="faint small">${m.id}</span></div>
+      <h3>${esc(m.label)}</h3>
+      <div class="small" style="font-weight:600;color:var(--muted);margin-bottom:2px">Pourquoi cet élément est-il attendu ?</div>
+      <div class="summary">${esc(m.why)}</div>
+      ${m.note ? `<div class="note" style="margin-top:8px">${icon('info')}<div>${esc(m.note)}</div></div>` : ''}
+      ${m.linked?.length ? `<div style="margin-top:6px">${m.linked.map((l) => `<button class="chip rule" data-act="goinc" data-id="${l}">${icon('alert')}Liée à ${l}</button>`).join('')}</div>` : ''}
+      ${m.sources.length ? `<div style="margin-top:8px">${m.sources.slice(0, 5).map((s) => srcChip(s, `${s.docId} · p.${s.page} · ${clip(docLabel(s.docId), 28)}`)).join('')}</div>` : ''}
+      ${m.checklistRef ? `<div class="faint small" style="margin-top:6px">Checklist : ${esc(m.checklistRef)}</div>` : ''}
+    </div>`).join('')}
+    <div class="grid g2" style="align-items:start">
+      <div class="card pad"><h3>Attendues et retrouvées</h3>
+        ${d.matched.map((m) => `<div class="check"><span class="ico" style="color:var(--ok)">${icon('check')}</span><div><b>${esc(m.label)}</b><div class="faint small">demandée : ${m.requestedIn.join(', ') || '—'} · versée : ${m.foundIn.join(', ')}</div></div></div>`).join('')}
+      </div>
+      <div class="card pad"><h3>${esc(S.checklist.name)}</h3><div class="ck-grid" style="grid-template-columns:1fr 1fr">
+        ${d.checklist.map((c) => `<div><span style="color:${c.found.length ? 'var(--ok)' : 'var(--crit)'}">${icon(c.found.length ? 'check' : 'x')}</span><span>${esc(c.label)} <span class="faint">${c.found.length ? c.found.join(', ') : ''}</span></span></div>`).join('')}
+      </div><div class="faint small" style="margin-top:8px">${esc(S.checklist.disclaimer)}</div></div>
+    </div>
+  </div>`;
+};
+
+// ---------------- Échéances
+VIEWS.echeances = () => {
+  const d = S.data;
+  const ctrl = d.deadlines.filter((x) => x.kind === 'CONTROLE');
+  const dls = d.deadlines.filter((x) => x.kind !== 'CONTROLE');
+  const days = [...Array(31)].map((_, i) => addDays(S.refDate, i));
+  const cal = days.map((x) => {
+    const hit = dls.filter((y) => y.dueDate === x);
+    const color = hit.some((y) => y.priority === 'CRITIQUE') ? 'var(--crit)' : hit.some((y) => y.priority === 'IMPORTANT') ? 'var(--imp)' : hit.length ? 'var(--suivi)' : null;
+    const dw = new Date(x + 'T12:00:00Z').getUTCDay();
+    return `<div class="${dw === 0 || dw === 6 || isHoliday(x) ? 'we' : ''} ${x === S.refDate ? 'today' : ''}" title="${dd(x)}${hit.length ? ' · ' + hit.map((h) => h.label).join(' / ') : ''}"><span class="num">${x.slice(8)}</span>${color ? `<span class="mk" style="background:${color}"></span>` : ''}</div>`;
+  }).join('');
+  return `<div class="page">
+    <div class="page-head"><div><h2>Moteur d'échéances</h2><p>Les échéances sont recalculées à partir de la date de référence (${dd(S.refDate)}). Chaque calcul est détaillé et rattaché à sa source et à sa règle.</p></div>
+      <div class="actions"><button class="btn" data-act="export">${icon('download')}Exporter (métadonnées seules)</button></div></div>
+    <div class="kinds">
+      <div class="card"><b><span class="tag">Date extraite</span></b>Date écrite telle quelle dans une pièce (ex. « avant le 30/10/2026 »). Aucune règle appliquée.</div>
+      <div class="card"><b><span class="chip rule">Échéance calculée</span></b>Date trouvée dans une pièce + règle procédurale (délai, jours ouvrables, art. 801 CPP).</div>
+      <div class="card"><b><span class="badge b-verif">Contrôle</span></b>Vérification de conformité d'actes déjà réalisés (ex. durée et prolongation de la garde à vue).</div>
+    </div>
+    <div class="card pad" style="margin-bottom:14px"><h3>31 prochains jours</h3><div class="cal">${cal}</div></div>
+    ${ctrl.map((c) => `<div class="card dl A_VERIFIER">
+      <div class="when"><span class="badge b-verif">Contrôle</span><div class="date" style="margin-top:8px">${badge(c.priority)}</div></div>
+      <div><div class="head" style="display:flex;gap:8px;align-items:center"><b style="font-size:15px">${esc(c.label)}</b><span class="chip rule">Règle ${esc(c.ruleId)}</span><span class="tag">${esc(c.basis)}</span></div>
+        <div class="muted small" style="margin:4px 0 8px">${esc(c.summary)}</div>
+        ${c.checks.map((k) => `<div class="check"><span class="ico" style="color:${k.status === 'CONFORME' ? 'var(--ok)' : 'var(--verif)'}">${icon(k.status === 'CONFORME' ? 'check' : 'alert')}</span><div><b>${esc(k.label)}</b> ${badge(k.status)}<div class="small">${esc(k.text)}</div></div></div>`).join('')}
+        <div style="margin-top:6px">${c.sources.map((s) => srcChip(s)).join('')}</div>
+        <div class="human" style="margin-top:8px">${icon('human')}Le système ne qualifie pas l'irrégularité : appréciation réservée au magistrat.</div>
+      </div></div>`).join('')}
+    ${dls.map((x) => `<div class="card dl ${x.priority}">
+      <div class="when"><div class="days num">${x.daysLeft < 0 ? 'Dépassée' : x.daysLeft === 0 ? "Aujourd'hui" : x.daysLeft + ' j'}</div><div class="date">${dayName(x.dueDate)} ${dd(x.dueDate)}</div><div style="margin-top:6px">${badge(x.priority)}</div></div>
+      <div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:15px">${esc(x.label)}</b>${x.kind === 'EXTRAITE' ? '<span class="tag">Date extraite</span>' : `<span class="chip rule">Échéance calculée · règle ${esc(x.ruleId)}</span>`}${x.indicative ? '<span class="tag">indicatif</span>' : ''}</div>
+        <div style="margin-top:4px"><b>Action :</b> ${esc(x.action)}</div>
+        ${x.basis ? `<div class="muted small">${esc(x.basis)}${x.summary ? ' · ' + esc(x.summary) : ''}</div>` : ''}
+        <div style="margin-top:6px"><span class="small muted">Source :</span> ${(x.sources || []).filter(Boolean).map((s) => srcChip(s, `${s.docId} · p.${s.page} · ${clip(docLabel(s.docId), 30)}`)).join('')}</div>
+        <details class="calc"><summary class="small"><b>Calcul</b> (${x.steps.length} étapes)</summary><ol>${x.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>${(x.notes || []).map((n) => `<div class="faint small" style="margin-top:4px">Note : ${esc(n)}</div>`).join('')}</details>
+      </div></div>`).join('')}
+    <div class="faint small">${esc(S.rules.disclaimer)}</div>
+  </div>`;
+};
+
+// ---------------- Actions
+VIEWS.actions = () => {
+  const d = S.data;
+  const groups = [['CRITIQUE', 'Critique'], ['IMPORTANT', 'Important'], ['A_VERIFIER', 'À vérifier'], ['SUIVI', 'Suivi']];
+  const target = { deadline: 'echeances', missing: 'manquants', contradiction: 'incoherences' };
+  return `<div class="page">
+    <div class="page-head"><div><h2>Actions à mener</h2><p>Liste opérationnelle dérivée des échéances, des pièces manquantes et des incohérences. Ce sont des vérifications proposées, jamais des décisions.</p></div></div>
+    ${groups.map(([k, l]) => {
+      const items = d.actions.filter((a) => a.priority === k);
+      if (!items.length) return '';
+      return `<div class="group-title">${badge(k)} <span>${items.length} action${items.length > 1 ? 's' : ''}</span></div>
+      <div class="card">${items.map((a) => `<div class="todo ${S.user.actionsDone[a.id] ? 'done' : ''}">
+        <input type="checkbox" data-act="done" data-id="${a.id}" ${S.user.actionsDone[a.id] ? 'checked' : ''}>
+        <div><div class="lbl">${esc(a.label)}</div><div class="why">${esc(clip(a.why, 260))}</div><div>${(a.sources || []).filter(Boolean).slice(0, 4).map((s) => srcChip(s)).join('')}</div></div>
+        <button class="btn sm ghost" data-act="${a.refType === 'contradiction' ? 'goinc' : 'go'}" data-v="${target[a.refType]}" data-id="${a.ref}">${esc(a.ref)} ${icon('right')}</button>
+      </div>`).join('')}</div>`;
+    }).join('')}
+  </div>`;
+};
+
+// ---------------- Interroger (RAG local)
+VIEWS.interroger = () => {
+  const ok = S.llm.status?.ok && S.llm.model;
+  const sugg = ['Où se trouvait M. DUBOIS entre 22h et 23h selon les pièces ?', 'Qui a entendu ou vu quelque chose entre 22h et 22h45 ?', 'Quelles expertises ont été demandées et lesquelles ont abouti ?', 'Que sait-on de la caméra du hall ?'];
+  return `<div class="page">
+    <div class="page-head"><div><h2>Interroger le dossier</h2><p>Recherche locale (index BM25 sur les ${S.data.chunks.length} passages du dossier) puis réponse rédigée par Mistral exécuté sur ce poste, avec citations vérifiées.</p></div></div>
+    <div class="chat">
+      <div>
+        <div class="ask"><input id="q" placeholder="Posez une question sur le dossier…" ${S.ui.chatBusy ? 'disabled' : ''}><button class="btn primary" data-act="ask" ${S.ui.chatBusy ? 'disabled' : ''}>${icon('search')}Demander</button></div>
+        <div class="sugg">${sugg.map((s) => `<button data-act="sugg">${esc(s)}</button>`).join('')}</div>
+        ${!ok ? `<div class="note warn" style="margin-top:8px">${icon('alert')}<div>Aucun modèle Mistral local détecté : seuls les passages pertinents sont affichés (recherche locale).</div></div>` : ''}
+        <div id="chatlog">${S.user.chat.slice().reverse().map(renderMsg).join('')}</div>
+      </div>
+      <div class="card pad"><h3>Fonctionnement</h3>
+        <ol class="method" style="padding-left:18px">
+          <li>La question est cherchée dans l'index local (BM25, aucune donnée transmise).</li>
+          <li>Si elle nomme un protagoniste, ses déclarations structurées et les éléments techniques liés sont ajoutés (Case Graph).</li>
+          <li>Ces passages sont transmis au modèle <b>${esc(S.llm.model || '—')}</b> exécuté par Ollama sur 127.0.0.1.</li>
+          <li>Le modèle doit citer chaque affirmation [pièce, page].</li>
+          <li>Les citations sont vérifiées ; les formulations interdites (culpabilité, mensonge) sont retirées.</li>
+        </ol>
+        <div class="human">${icon('human')}Les extraits cités font foi, pas le texte généré.</div>
+      </div>
+    </div>
+  </div>`;
+};
+
+function renderMsg(m) {
+  const check = m.check;
+  return `<div class="msg"><div class="qq">${icon('chat').replace('<svg', '<svg width="15" height="15"')} ${esc(m.q)}</div>
+    ${m.answer != null ? `<div class="ans ${m.streaming ? 'stream' : ''}">${linkCitations(esc(m.answer))}</div>` : ''}
+    <div class="foot-row">${m.model ? `<span class="faint small">${esc(m.model)}${m.ms ? ` · ${(m.ms / 1000).toFixed(1)} s` : ''}${m.cached ? ' · cache local' : ''}</span>` : ''}
+      ${check ? (check.ok ? '<span class="badge b-ok">Toutes les affirmations sont sourcées</span>' : `<span class="badge b-imp">${check.unsourced.length} phrase(s) sans source · ${check.invalid.length} référence(s) invalide(s)</span>`) : ''}
+      ${m.flagged?.length ? `<span class="badge b-verif">${m.flagged.length} formulation(s) retirée(s)</span>` : ''}</div>
+    <details style="margin-top:6px" ${m.answer == null ? 'open' : ''}><summary class="small muted">Passages consultés (${m.passages.length})</summary>
+      ${m.passages.map((p) => `<div class="passage">${srcChip({ docId: p.docId, page: p.page, quote: p.text.replace(/^[^:]{0,60} : /, '').slice(0, 200) })} ${p.score === 'fait' ? '<span class="tag">fait structuré (Case Graph)</span>' : `<span class="faint small">BM25 ${p.score}</span>`}<br>${esc(clip(p.text, 300))}</div>`).join('')}</details>
+  </div>`;
+}
+
+async function ask(q) {
+  if (!q?.trim() || S.ui.chatBusy) return;
+  if (!S.bm25) S.bm25 = new Bm25(S.data.chunks);
+  const passages = askPassages(S.data, S.bm25, q).map((p) => ({ ...p, typeLabel: docLabel(p.docId) }));
+  const m = { q, passages, answer: null, at: new Date().toISOString() };
+  S.user.chat.push(m);
+  if (!(S.llm.status?.ok && S.llm.model)) { persist(); render(); return; }
+  S.ui.chatBusy = true; m.answer = ''; m.streaming = true; render();
+  try {
+    const r = await llmCall({ messages: askPrompt(q, passages), stream: true, onChunk: (t) => { m.answer += t; const el = document.querySelector('#chatlog .ans'); if (el) el.textContent = m.answer; } });
+    const g = guard(r.content);
+    m.answer = g.text; m.flagged = g.flagged; m.model = r.model; m.ms = r.ms; m.cached = r.cached;
+    m.check = citationsCheck(g.text, new Set(S.data.documents.map((x) => x.id)));
+  } catch (e) {
+    m.answer = `Mistral local indisponible : ${e.message}`;
+  }
+  m.streaming = false; S.ui.chatBusy = false;
+  persist(); render();
+}
+
+// ---------------- Graphe
+VIEWS.graphe = () => {
+  const g = S.data.graph;
+  const col = (types) => g.nodes.filter((n) => types.includes(n.type));
+  const node = (n) => {
+    const sub = n.type === 'PERSON' ? ROLE_LABEL[n.role] : n.type === 'STATEMENT' ? 'Déclaration' : n.type === 'FINDING' ? (n.level === 'FORTE' ? 'Forte contradiction' : 'À vérifier') : n.type === 'MISSING' ? 'Manquant / attendu' : n.sub || 'Élément';
+    return `<div class="gnode ${n.type} ${n.role || ''}" data-node="${esc(n.id)}" data-act="gnode"><div class="t">${esc(sub)}</div>${esc(clip(n.label, 90))}</div>`;
+  };
+  return `<div class="page">
+    <div class="page-head"><div><h2>Case Graph</h2><p>Les informations sont reliées entre elles (qui déclare quoi, ce qui est en tension, ce qui manque) : c'est cette structure, plutôt qu'un résumé pièce par pièce, qui permet de raisonner sur le dossier. Survolez un nœud.</p></div></div>
+    <div class="card pad graph-wrap" id="gwrap">
+      <svg class="edges" id="gedges"></svg>
+      <div class="graph-cols">
+        <div class="col"><h4>Personnes</h4>${col(['PERSON']).map(node).join('')}</div>
+        <div class="col"><h4>Déclarations</h4>${col(['STATEMENT']).map(node).join('')}</div>
+        <div class="col"><h4>Éléments matériels et techniques</h4>${col(['EVIDENCE', 'EVENT']).map(node).join('')}</div>
+        <div class="col"><h4>Constats</h4>${col(['FINDING', 'MISSING']).map(node).join('')}</div>
+      </div>
+    </div>
+  </div>`;
+};
+
+AFTER.graphe = () => {
+  const wrap = document.getElementById('gwrap');
+  const svg = document.getElementById('gedges');
+  const draw = () => {
+    const base = wrap.getBoundingClientRect();
+    const pos = {};
+    wrap.querySelectorAll('.gnode').forEach((el) => { const r = el.getBoundingClientRect(); pos[el.dataset.node] = { l: r.left - base.left, r: r.right - base.left, y: r.top - base.top + r.height / 2 }; });
+    svg.innerHTML = S.data.graph.edges.map((e, i) => {
+      const a = pos[e.from], b = pos[e.to];
+      if (!a || !b) return '';
+      const [p, q] = a.l < b.l ? [a, b] : [b, a];
+      const x1 = p.r, x2 = q.l, mx = (x1 + x2) / 2;
+      return `<path data-e="${i}" data-from="${esc(e.from)}" data-to="${esc(e.to)}" class="${e.rel === 'EN TENSION' ? 'tension' : ''}" d="M${x1},${p.y} C${mx},${p.y} ${mx},${q.y} ${x2},${q.y}"><title>${esc(e.rel)}</title></path>`;
+    }).join('');
+  };
+  draw();
+  wrap.addEventListener('mouseover', (ev) => {
+    const n = ev.target.closest('.gnode');
+    if (!n) return;
+    const id = n.dataset.node;
+    const linked = new Set([id]);
+    S.data.graph.edges.forEach((e) => { if (e.from === id) linked.add(e.to); if (e.to === id) linked.add(e.from); });
+    wrap.querySelectorAll('.gnode').forEach((el) => { el.classList.toggle('dim', !linked.has(el.dataset.node)); el.classList.toggle('hi', el.dataset.node === id); });
+    svg.querySelectorAll('path').forEach((p) => { const on = p.dataset.from === id || p.dataset.to === id; p.classList.toggle('hi', on); p.classList.toggle('dim', !on); });
+  });
+  wrap.addEventListener('mouseleave', () => { wrap.querySelectorAll('.gnode').forEach((el) => el.classList.remove('dim', 'hi')); svg.querySelectorAll('path').forEach((p) => p.classList.remove('hi', 'dim')); });
+};
+
+// ---------------- Confidentialité
+VIEWS.confidentialite = () => {
+  const i = S.info;
+  const st = S.llm.status;
+  return `<div class="page">
+    <div class="page-head"><div><h2>Local-first et sécurité</h2><p>Les pièces pénales contiennent des données couvertes par le secret de l'enquête et de l'instruction. Le prototype est conçu pour qu'elles ne quittent jamais le poste.</p></div></div>
+    <div class="grid g2" style="align-items:start">
+      <div class="card pad"><h3>${icon('lock').replace('<svg', '<svg width="16" height="16"')} Stockage chiffré</h3>
+        <div class="check"><span class="ico" style="color:var(--ok)">${icon('check')}</span><div>Pièces importées et analyses chiffrées au repos en <b>${esc(i.vault.algorithm)}</b>.</div></div>
+        <div class="check"><span class="ico" style="color:${i.vault.keyProtectedByOS ? 'var(--ok)' : 'var(--imp)'}">${icon(i.vault.keyProtectedByOS ? 'check' : 'alert')}</span><div>Clé ${i.vault.keyProtectedByOS ? 'protégée par le trousseau du système (DPAPI / Keychain)' : 'non protégée par le système (trousseau indisponible)'}.</div></div>
+        <div class="check"><span class="ico" style="color:var(--ok)">${icon('check')}</span><div>Emplacement : <span class="mono">${esc(i.vault.dataDir)}</span></div></div>
+      </div>
+      <div class="card pad"><h3>${icon('wifi_off').replace('<svg', '<svg width="16" height="16"')} Réseau</h3>
+        <div class="check"><span class="ico" style="color:var(--ok)">${icon('check')}</span><div>L'interface n'a accès à aucun réseau : toute requête sortante est bloquée par la garde réseau du processus principal.</div></div>
+        <div class="check"><span class="ico" style="color:var(--ok)">${icon('check')}</span><div>Requêtes externes bloquées depuis le lancement : <b class="num" id="netblocked">${i.net.blocked}</b>. Ressources chargées localement : <span class="num">${i.net.allowedLocal}</span>.</div></div>
+        <div class="check"><span class="ico" style="color:var(--ok)">${icon('check')}</span><div>Seul appel autorisé : le LLM local sur <span class="mono">${esc(i.ollama)}</span> (vérifié côté processus principal).</div></div>
+      </div>
+      <div class="card pad"><h3>${icon('cpu').replace('<svg', '<svg width="16" height="16"')} Modèle Mistral local</h3>
+        ${st?.ok ? `<div class="check"><span class="ico" style="color:var(--ok)">${icon('check')}</span><div>Ollama ${esc(st.version)} actif sur ce poste.</div></div>
+          <div class="form-row" style="margin-top:8px"><label>Modèle utilisé</label><select id="model">${st.models.map((m) => `<option ${m.name === S.llm.model ? 'selected' : ''} value="${esc(m.name)}">${esc(m.name)} · ${esc(m.params || '')} ${esc(m.quant || '')}</option>`).join('')}</select></div>
+          <div class="faint small">Recommandé : ministral-3:8b (portable 16 Go) ou ministral-3:14b (32 Go / Apple Silicon). Licence Apache 2.0.</div>`
+          : `<div class="note warn">${icon('alert')}<div>Ollama non détecté (${esc(st?.error || '')}). L'analyse par règles fonctionne sans LLM ; installez Ollama puis <span class="mono">ollama pull ministral-3:8b</span>.</div></div>`}
+        <button class="btn sm" style="margin-top:8px" data-act="llm-refresh">Actualiser</button>
+      </div>
+      <div class="card pad"><h3>${icon('download').replace('<svg', '<svg width="16" height="16"')} Ce qui peut sortir du poste</h3>
+        <div class="small">Uniquement, et sur action explicite : des <b>métadonnées d'échéances</b> (identifiant de dossier pseudonymisé, date, priorité, type de tâche, règle), pour un agenda ou un outil de gestion.</div>
+        <div class="small" style="margin-top:6px">Jamais : noms, témoignages, contenu des pièces ou des preuves, données personnelles. Un contrôle automatique vérifie l'export avant enregistrement.</div>
+        ${S.data ? `<button class="btn sm" style="margin-top:10px" data-act="export">${icon('download')}Prévisualiser l'export</button>` : ''}
+      </div>
+    </div>
+    ${S.data ? `<div class="card pad" style="margin-top:14px"><h3>Journal de l'analyse</h3><div class="small mono">${Object.entries(S.data.stats.timings).map(([k, v]) => `${k} : ${v} ms`).join(' · ')} · moteur v${esc(S.data.engine)} · analysé le ${esc(S.data.analyzedAt.replace('T', ' ').slice(0, 19))}</div>
+      ${S.data.log.length ? `<div class="small muted" style="margin-top:6px">${S.data.log.map(esc).join('<br>')}</div>` : ''}</div>` : ''}
+  </div>`;
+};
+AFTER.confidentialite = () => {
+  const sel = document.getElementById('model');
+  if (sel) sel.onchange = () => { S.llm.model = sel.value; renderTop(); };
+};
+
+// ------------------------------------------------------------------ Export métadonnées
+async function caseCode() {
+  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(S.meta.id + '|lccc'));
+  return [...new Uint8Array(h)].slice(0, 2).map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+async function buildExport() {
+  const code = await caseCode();
+  const P = { CRITIQUE: 'CRITICAL', IMPORTANT: 'HIGH', SUIVI: 'NORMAL', DEPASSEE: 'OVERDUE' };
+  const items = S.data.deadlines.filter((x) => x.dueDate).map((x) => ({ case_id: code, deadline: x.dueDate, priority: P[x.priority] || 'NORMAL', task_type: x.kind === 'EXTRAITE' ? 'DOCUMENT_DATE' : 'PROCEDURAL_ACTION', rule: x.ruleId || null }));
+  const json = JSON.stringify({ schema: 'lccc.export/1', generated_at: new Date().toISOString(), items }, null, 2);
+  const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//LCCC//Copilote penal local//FR',
+    ...items.map((x, i) => ['BEGIN:VEVENT', `UID:lccc-${code}-${i}@local`, `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}Z`, `DTSTART;VALUE=DATE:${x.deadline.replace(/-/g, '')}`, `SUMMARY:[LCCC ${code}] ${x.task_type === 'PROCEDURAL_ACTION' ? 'Échéance procédurale' : 'Date au dossier'}${x.rule ? ' ' + x.rule : ''} · ${x.priority}`, 'END:VEVENT'].join('\r\n')),
+    'END:VCALENDAR'].join('\r\n');
+  // Contrôle : aucun nom, numéro, ni extrait ne doit figurer dans l'export
+  const forbidden = [...S.data.persons.flatMap((p) => [p.last, p.first].filter((x) => x && x.length > 2)), ...S.data.phone.map((p) => p.owner?.number).filter(Boolean), S.meta.name];
+  const leaks = forbidden.filter((f) => (json + ics).toLowerCase().includes(String(f).toLowerCase()));
+  return { code, json, ics, leaks, checked: forbidden.length };
+}
+async function showExport() {
+  const e = await buildExport();
+  document.getElementById('modal').innerHTML = `<div class="modal-bg" data-act="close-modal"><div class="modal" data-stop="1">
+    <h3>Export des échéances : métadonnées uniquement</h3>
+    <div class="muted small">Identifiant de dossier pseudonymisé <b>${e.code}</b> (empreinte non réversible). Destiné à un agenda ou un outil de suivi.</div>
+    <div class="note ${e.leaks.length ? 'warn' : ''}" style="margin:10px 0">${icon(e.leaks.length ? 'alert' : 'shield')}<div>${e.leaks.length ? `Contrôle échoué : ${e.leaks.length} donnée(s) sensible(s) détectée(s). Export bloqué.` : `Contrôle automatique réussi : aucun des ${e.checked} noms, numéros ou intitulés sensibles du dossier ne figure dans l'export.`}</div></div>
+    <div class="grid g2"><div><b class="small">JSON</b><pre class="code">${esc(e.json)}</pre></div><div><b class="small">Agenda (ICS)</b><pre class="code">${esc(e.ics)}</pre></div></div>
+    <div class="small muted" style="margin:8px 0">Exclus : noms, témoignages, contenu des pièces et des preuves, numéros de téléphone, adresses.</div>
+    <div class="foot-row"><span class="spacer"></span><button class="btn" data-act="close-modal">Fermer</button>
+      <button class="btn" data-act="save-export" data-ext="ics" ${e.leaks.length ? 'disabled' : ''}>Enregistrer .ics</button>
+      <button class="btn primary" data-act="save-export" data-ext="json" ${e.leaks.length ? 'disabled' : ''}>Enregistrer .json</button></div>
+  </div></div>`;
+  S.ui.export = e;
+}
+
+// ------------------------------------------------------------------ LLM
+async function llmCall({ messages, format, stream, onChunk }) {
+  const model = S.llm.model;
+  const key = await promptKey(model, messages, format);
+  const hit = S.user.llm[key] || S.demoCache[key];
+  if (hit) { if (onChunk) onChunk(hit.content); return { ...hit, cached: true }; }
+  if (!S.llm.status?.ok || !model) throw new Error('aucun modèle local disponible');
+  const id = `r${Date.now()}${Math.random().toString(16).slice(2, 6)}`;
+  const r = await api.llm.chat({ id, model, messages, format, stream: !!stream }, onChunk);
+  const res = { content: r.content, ms: r.ms, model, at: new Date().toISOString() };
+  S.user.llm[key] = res;
+  persist();
+  return res;
+}
+
+// ------------------------------------------------------------------ Dossiers
+async function openCase(id) {
+  const raw = await api.cases.load(id);
+  const meta = S.cases.find((c) => c.id === id);
+  const obj = raw ? JSON.parse(raw) : { meta, files: [], analysis: null, user: newUser() };
+  S.meta = obj.meta || meta; S.files = (obj.files || []).map((f) => ({ ...f, fresh: false })); S.data = obj.analysis; S.user = { ...newUser(), ...(obj.user || {}) };
+  S.bm25 = null; clearViewerCache();
+  if (S.data && S.data.refDate !== S.refDate) recomputeDeadlines();
+  go(S.data ? 'synthese' : 'import');
+}
+
+function toast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast'; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+// ------------------------------------------------------------------ Événements
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  if (b.dataset.act === 'close-modal' && e.target.closest('[data-stop]') && !e.target.closest('button')) return;
+  const a = b.dataset.act;
+  if (b.tagName === 'A') e.preventDefault();
+  switch (a) {
+    case 'go': return go(b.dataset.v);
+    case 'src': {
+      const s = SRC[+b.dataset.i];
+      return openSource({ documents: S.data.documents, files: S.files, getFile: (fid) => api.cases.getFile(S.meta.id, fid) }, s);
+    }
+    case 'close-src': return closeSource();
+    case 'src-page': return turnPage(+b.dataset.d);
+    case 'create-case': {
+      const meta = await api.cases.create({ name: document.getElementById('f-name').value || 'Nouveau dossier', type: document.getElementById('f-type').value, juridiction: document.getElementById('f-jur').value, ref: document.getElementById('f-ref').value });
+      S.cases = await api.cases.list();
+      S.meta = meta; S.files = []; S.data = null; S.user = newUser();
+      persist();
+      return go('import');
+    }
+    case 'open-case': return openCase(b.dataset.id);
+    case 'del-case': if (confirm('Supprimer définitivement ce dossier et ses pièces chiffrées de ce poste ?')) { await api.cases.remove(b.dataset.id); S.cases = await api.cases.list(); render(); } return;
+    case 'pick': return addFiles(await api.pickFiles(b.dataset.folder === '1'));
+    case 'demo': return addFiles(await api.demoFiles());
+    case 'clear-files': S.files = S.files.filter((f) => !f.fresh); return render();
+    case 'analyze': return runAnalysis();
+    case 'fam': S.ui.famFilter = b.dataset.f; return render();
+    case 'tltab': S.ui.tlTab = b.dataset.t; return render();
+    case 'tlall': S.ui.tlAll = b.checked; return render();
+    case 'incf': S.ui.incFilter = b.dataset.f; return render();
+    case 'goinc': { S.ui.incFilter = 'all'; go('incoherences'); const el = document.getElementById(b.dataset.id); if (el) { el.scrollIntoView({ block: 'start' }); el.style.boxShadow = '0 0 0 2px var(--verif)'; } return; }
+    case 'incstat': S.user.incStatus[b.dataset.id] = b.dataset.s; persist(); return render();
+    case 'explain': return explain(b.dataset.id);
+    case 'done': S.user.actionsDone[b.dataset.id] = b.checked; persist(); return render();
+    case 'ask': return ask(document.getElementById('q').value);
+    case 'sugg': return ask(b.textContent);
+    case 'export': return showExport();
+    case 'close-modal': document.getElementById('modal').innerHTML = ''; return;
+    case 'save-export': {
+      const ex = S.ui.export;
+      const p = await api.exportFile({ defaultName: `LCCC-${ex.code}-echeances.${b.dataset.ext}`, content: b.dataset.ext === 'json' ? ex.json : ex.ics, ext: b.dataset.ext });
+      if (p) toast(`Export enregistré : ${p}`);
+      return;
+    }
+    case 'llm-refresh': return refreshLlm();
+    case 'gnode': {
+      const n = S.data.graph.nodes.find((x) => x.id === b.dataset.node);
+      if (n?.sources?.[0]) return openSource({ documents: S.data.documents, files: S.files, getFile: (fid) => api.cases.getFile(S.meta.id, fid) }, n.sources[0]);
+      if (n?.type === 'FINDING') { b.dataset.id = n.id; S.ui.incFilter = 'all'; go('incoherences'); document.getElementById(n.id)?.scrollIntoView(); }
+      if (n?.type === 'MISSING') go('manquants');
+      return;
+    }
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSource();
+  if (e.key === 'Enter' && e.target.id === 'q') ask(e.target.value);
+});
+
+// ------------------------------------------------------------------ Démonstration automatisée (captures d'écran)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function autotest(mode) {
+  const shot = async (n) => { await sleep(450); await api.capture(n); };
+  await sleep(800);
+  await shot('01_accueil');
+  S.meta = await api.cases.create({ name: 'Affaire Martin / Dubois', type: 'Homicide', juridiction: 'France · pénal', ref: 'JI 26/00147' });
+  S.files = []; S.data = null; S.user = newUser();
+  go('import');
+  addFiles(await api.demoFiles());
+  await shot('02_import');
+  await runAnalysis();
+  await shot('03_analyse');
+  for (const [v, n] of [['synthese', '04_synthese'], ['pieces', '05_pieces'], ['chronologie', '06_chronologie'], ['personnes', '07_personnes'], ['preuves', '08_preuves'],
+    ['incoherences', '09_incoherences'], ['manquants', '10_manquants'], ['echeances', '11_echeances'], ['actions', '12_actions'], ['graphe', '13_graphe'], ['confidentialite', '14_confidentialite']]) {
+    go(v); await shot(n);
+  }
+  go('incoherences');
+  const inc = S.data.contradictions.find((c) => c.key === 'telephone');
+  await openSource({ documents: S.data.documents, files: S.files, getFile: (fid) => api.cases.getFile(S.meta.id, fid) }, inc.sides[1].items[0]);
+  await sleep(900); await shot('15_source_fadettes');
+  closeSource();
+  const pres = S.data.contradictions.find((c) => c.key === 'presence');
+  await openSource({ documents: S.data.documents, files: S.files, getFile: (fid) => api.cases.getFile(S.meta.id, fid) }, pres.sides[1].items[0]);
+  await sleep(900); await shot('16_source_temoin');
+  closeSource();
+  if (mode === 'llm' && S.llm.status?.ok) {
+    go('incoherences');
+    await explain(S.data.contradictions[0].id);
+    await shot('17_lecture_mistral');
+    go('interroger');
+    await ask('Où se trouvait M. DUBOIS entre 22h et 23h selon les pièces ?');
+    await shot('18_interroger');
+  }
+  await showExport(); await shot('19_export');
+  if (mode !== 'keep') api.quit();
+}
+
+boot();

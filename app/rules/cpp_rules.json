@@ -1,0 +1,83 @@
+{
+  "name": "Règles procédurales · démonstration homicide (instruction)",
+  "version": "2026-10-04",
+  "disclaimer": "Jeu de règles volontairement restreint, rédigé pour le scénario de démonstration. Il ne couvre pas l'ensemble du code de procédure pénale et doit être validé par un magistrat ou un greffier avant tout usage réel.",
+  "computation": {
+    "art801": "Tout délai expire le dernier jour à vingt-quatre heures ; le délai qui expirerait un samedi, un dimanche ou un jour férié ou chômé est prorogé jusqu'au premier jour ouvrable suivant (art. 801 CPP).",
+    "ouvrables": "Jours ouvrables : tous les jours sauf le dimanche et les jours fériés."
+  },
+  "rules": [
+    {
+      "id": "CPP-148-A",
+      "kind": "DEADLINE",
+      "title": "Demande de mise en liberté : transmission au JLD",
+      "basis": "Art. 148, al. 2 CPP",
+      "summary": "Sauf s'il donne une suite favorable à la demande, le juge d'instruction la transmet, avec son avis motivé, au juge des libertés et de la détention dans les cinq jours suivant la communication au procureur de la République.",
+      "trigger": { "fact": "dml.communicated", "fallback": "dml.received", "label": "communication de la DML au parquet" },
+      "delay": { "n": 5, "unit": "day", "count": "calendar", "art801": true },
+      "action": "Statuer sur la DML ou la transmettre au JLD avec avis motivé",
+      "thresholds": { "CRITIQUE": 3, "IMPORTANT": 10 },
+      "notes": [
+        "Loi n° 2026-651 du 23/07/2026 (JCRV) : une nouvelle DML ne peut être formée tant qu'il n'a pas été statué sur la précédente ; un débat contradictoire en urgence est possible si le délai pour statuer est expiré. Rédaction exacte à vérifier sur Légifrance."
+      ]
+    },
+    {
+      "id": "CPP-148-B",
+      "kind": "DEADLINE",
+      "title": "Demande de mise en liberté : décision du JLD",
+      "basis": "Art. 148, al. 3 et 5 CPP",
+      "summary": "Le JLD statue dans un délai de trois jours ouvrables à compter de la transmission. À défaut, la personne peut saisir directement la chambre de l'instruction.",
+      "chain": "CPP-148-A",
+      "trigger": { "label": "transmission au JLD (au plus tard à l'échéance CPP-148-A)" },
+      "delay": { "n": 3, "unit": "day", "count": "ouvrables", "art801": true },
+      "action": "Veiller à la décision du JLD sur la DML (délai calculé à partir de la transmission au plus tard)",
+      "thresholds": { "CRITIQUE": 3, "IMPORTANT": 10 }
+    },
+    {
+      "id": "CPP-82-1",
+      "kind": "DEADLINE",
+      "title": "Demande d'actes : réponse du juge d'instruction",
+      "basis": "Art. 82-1 CPP",
+      "summary": "Si le juge d'instruction n'entend pas faire droit à la demande, il rend une ordonnance motivée au plus tard dans le délai d'un mois à compter de sa réception.",
+      "trigger": { "fact": "demandeActes.received", "label": "réception de la demande d'actes" },
+      "delay": { "n": 1, "unit": "month", "count": "calendar", "art801": true },
+      "action": "Faire droit à la demande d'actes ou rendre une ordonnance motivée de refus",
+      "thresholds": { "CRITIQUE": 3, "IMPORTANT": 14 }
+    },
+    {
+      "id": "CPP-145-2",
+      "kind": "DEADLINE",
+      "title": "Détention provisoire criminelle : durée initiale",
+      "basis": "Art. 145-2 CPP",
+      "summary": "En matière criminelle, la personne mise en examen ne peut être maintenue en détention au-delà d'un an, sauf prolongation par le JLD après débat contradictoire.",
+      "trigger": { "fact": "detention", "label": "ordonnance de placement en détention provisoire" },
+      "delay": { "n": 1, "unit": "year", "count": "calendar", "art801": false },
+      "indicative": true,
+      "action": "Anticiper l'éventuel débat de prolongation de la détention provisoire",
+      "thresholds": { "CRITIQUE": 7, "IMPORTANT": 30 },
+      "notes": ["Échéance indicative : le mode de computation des durées de détention doit être vérifié par le greffe."]
+    },
+    {
+      "id": "CPP-63",
+      "kind": "CONTROL",
+      "title": "Garde à vue : point de départ, prolongation et durée",
+      "basis": "Art. 63, II et III CPP",
+      "summary": "La garde à vue ne peut excéder 24 heures, renouvelables une fois sur autorisation écrite et motivée du procureur. L'heure du début de la mesure est fixée, le cas échéant, à l'heure à laquelle la personne a été appréhendée.",
+      "check": "GAV",
+      "maxHours": 24,
+      "maxTotalHours": 48,
+      "action": "Vérifier l'heure de début retenue et l'horodatage de l'autorisation de prolongation"
+    },
+    {
+      "id": "TECH-VID-01",
+      "kind": "DEADLINE",
+      "title": "Vidéoprotection privée : risque d'écrasement des images",
+      "basis": "Durée de conservation déclarée dans le dossier (à défaut : 30 jours, plafond usuel)",
+      "summary": "Échéance technique, non procédurale : au-delà de la durée de conservation, les enregistrements sont effacés et la preuve est perdue.",
+      "trigger": { "fact": "camera.retention", "label": "date des faits + durée de conservation déclarée" },
+      "delay": { "n": "declared", "unit": "day", "count": "calendar", "art801": false, "default": 30 },
+      "action": "Faire requérir la conservation et l'extraction des images",
+      "thresholds": { "CRITIQUE": 7, "IMPORTANT": 14 }
+    }
+  ]
+}

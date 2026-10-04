@@ -1,0 +1,19 @@
+{
+  "name": "lccc-copilote-penal-local",
+  "productName": "LCCC · Copilote pénal local",
+  "version": "0.1.0",
+  "description": "Local Criminal Case Copilot : analyse locale de dossiers pénaux (prototype hackathon Sciences Po × Mistral AI)",
+  "type": "module",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test:engine": "node scripts/test-engine.mjs",
+    "precompute": "node scripts/precompute-llm.mjs"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "pdfjs-dist": "^6.4.299"
+  },
+  "license": "UNLICENSED"
+}

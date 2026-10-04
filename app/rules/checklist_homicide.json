@@ -1,0 +1,25 @@
+{
+  "name": "Checklist homicide · démonstration hackathon",
+  "version": "2026-10-04",
+  "disclaimer": "Liste indicative pour le scénario de démonstration ; à adapter par la juridiction.",
+  "items": [
+    { "id": "CK-01", "label": "Rapport initial d'intervention", "docTypes": ["PV_INTERVENTION", "FICHE_CIC"], "basis": "constatations initiales", "level": "IMPORTANT" },
+    { "id": "CK-02", "label": "PV de transport et constatations", "docTypes": ["PV_CONSTATATIONS"], "basis": "art. 54 CPP", "level": "IMPORTANT" },
+    { "id": "CK-03", "label": "Planche photographique", "docTypes": ["PLANCHE_PHOTO"], "basis": "pratique PTS", "level": "SUIVI" },
+    { "id": "CK-04", "label": "Auditions de témoins", "docTypes": ["AUDITION_TEMOIN"], "basis": "enquête de voisinage", "level": "IMPORTANT" },
+    { "id": "CK-05", "label": "Placement en garde à vue et notification des droits", "docTypes": ["PV_GAV"], "basis": "art. 63-1 CPP", "level": "IMPORTANT" },
+    { "id": "CK-06", "label": "Audition(s) du mis en cause", "docTypes": ["AUDITION_GAV", "IPC"], "basis": "art. 63-4-2 et 116 CPP", "level": "IMPORTANT" },
+    { "id": "CK-07", "label": "Rapport d'autopsie", "docTypes": ["AUTOPSIE"], "basis": "art. 230-28 CPP", "level": "IMPORTANT" },
+    { "id": "CK-08", "label": "Analyses toxicologiques", "docTypes": ["RAPPORT_TOXICO"], "basis": "prélèvements réalisés lors de l'autopsie", "level": "IMPORTANT" },
+    { "id": "CK-09", "label": "Perquisition et saisies", "docTypes": ["PERQUISITION"], "basis": "art. 56 et 57 CPP", "level": "IMPORTANT" },
+    { "id": "CK-10", "label": "Exploitation de la vidéoprotection", "docTypes": ["VIDEO"], "basis": "investigations techniques", "level": "IMPORTANT" },
+    { "id": "CK-11", "label": "Téléphonie : relevés de l'opérateur", "docTypes": ["TELEPHONIE"], "basis": "art. 60-1 CPP", "level": "IMPORTANT" },
+    { "id": "CK-12", "label": "Téléphonie : extraction du terminal saisi", "docTypes": ["RAPPORT_EXTRACTION_TEL"], "basis": "investigations techniques", "level": "IMPORTANT" },
+    { "id": "CK-13", "label": "Expertise génétique", "docTypes": ["EXPERTISE_GENETIQUE"], "basis": "art. 156 CPP", "level": "IMPORTANT" },
+    { "id": "CK-14", "label": "Bulletin n°1 du casier judiciaire", "docTypes": ["CASIER_B1"], "basis": "antécédents judiciaires", "level": "IMPORTANT" },
+    { "id": "CK-15", "label": "Enquête de personnalité", "docTypes": ["ENQUETE_PERSONNALITE"], "basis": "art. 81, al. 6 CPP (obligatoire en matière criminelle)", "level": "SUIVI", "status": "A_PLANIFIER" },
+    { "id": "CK-16", "label": "Réquisitoire introductif", "docTypes": ["REQUISITOIRE"], "basis": "art. 80 CPP", "level": "IMPORTANT" },
+    { "id": "CK-17", "label": "Interrogatoire de première comparution", "docTypes": ["IPC"], "basis": "art. 116 CPP", "level": "IMPORTANT" },
+    { "id": "CK-18", "label": "Titre de détention (ordonnance du JLD)", "docTypes": ["ORDONNANCE_DETENTION"], "basis": "art. 145 CPP", "level": "IMPORTANT" }
+  ]
+}
